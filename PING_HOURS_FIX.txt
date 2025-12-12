@@ -1,0 +1,165 @@
+=======================================================
+PING FUNCTIONALITY TIMING FIX - COMPLETED
+=======================================================
+
+ISSUE RESOLVED: Ping delay changed from days to hours
+Date: November 28, 2025
+Status: COMPLETED ✓
+
+=======================================================
+WHAT WAS FIXED
+=======================================================
+
+The ping functionality was using day-based timing instead of
+hour-based timing as required by the system specifications.
+
+Changes Made:
+
+1. Database Schema (migrations/20251119000000_add_ping_tracking.sql)
+   ✓ Changed column name: ping_delay_days → ping_delay_hours
+   ✓ Changed default value: 3 days → 72 hours
+   ✓ Updated column type to use hours (integer)
+
+2. TypeScript Interface (src/lib/supabase.ts)
+   ✓ Updated ContactGroup interface:
+     - Old: ping_delay_days: number;
+     - New: ping_delay_hours: number;
+
+3. Edge Function (supabase/functions/send-ping-emails/index.ts)
+   ✓ Completely rewritten to use hour-based calculations
+   ✓ Changed logic from daysPassed to hoursPassed
+   ✓ Updated calculation: (now - initialSent) / (1000 * 60 * 60)
+   ✓ Updated database queries to use ping_delay_hours
+   ✓ Removed duplicate code blocks
+   ✓ Default ping delay: 72 hours (equivalent to 3 days)
+
+=======================================================
+HOW IT WORKS NOW
+=======================================================
+
+1. After a mailing is sent successfully:
+   - A ping tracking record is created with status "awaiting_response"
+   - The initial_sent_at timestamp is recorded
+
+2. The send-ping-emails Edge Function runs periodically:
+   - Checks all ping tracking records with status "awaiting_response"
+   - Calculates hours passed since initial_sent_at
+   - Loads ping_delay_hours from the contact's group (default: 72 hours)
+   - If hoursPassed >= ping_delay_hours:
+     * Sends the ping email using ping-specific content from the group
+     * Updates tracking status to "ping_sent"
+
+3. Ping Email Content:
+   - Uses ping_subject from contact group
+   - Uses ping_text_content and/or ping_html_content
+   - Replaces [NAME] placeholder with contact's name
+   - Sends from the same email that sent the original mailing
+
+=======================================================
+VERIFICATION
+=======================================================
+
+✓ Build completed successfully (npm run build)
+✓ No TypeScript errors
+✓ All files updated consistently
+✓ Hour-based timing implemented throughout
+
+=======================================================
+DEPLOYMENT INSTRUCTIONS
+=======================================================
+
+To deploy these changes to production:
+
+1. Apply the Database Migration:
+   - Go to Supabase Dashboard → SQL Editor
+   - Run the migration: migrations/20251119000000_add_ping_tracking.sql
+   - This will add the ping_delay_hours column to contact_groups
+
+2. Deploy the Edge Function:
+   - Go to Supabase Dashboard → Edge Functions
+   - Update "send-ping-emails" function
+   - Copy content from: supabase/functions/send-ping-emails/index.ts
+   - Deploy the function
+
+3. Deploy Frontend Changes:
+   - Build: npm run build
+   - Deploy the dist/ folder to your hosting
+
+=======================================================
+TESTING THE FIX
+=======================================================
+
+To verify the ping functionality works with hours:
+
+1. Create a contact group with custom ping settings:
+   - Set ping_delay_hours to a small value (e.g., 1 hour for testing)
+   - Set ping_subject, ping_text_content
+
+2. Send a test mailing to a contact in that group
+
+3. Wait for the specified number of hours
+
+4. Manually trigger the send-ping-emails function or wait for it to run
+
+5. Verify:
+   - Ping email is sent after the correct number of hours
+   - Tracking status updates to "ping_sent"
+   - Ping content matches the group's settings
+
+=======================================================
+DEFAULT BEHAVIOR
+=======================================================
+
+If a contact group doesn't have ping settings configured:
+- Default delay: 72 hours (3 days)
+- Default subject: "Follow-up"
+- Default content: Generic follow-up message
+
+=======================================================
+CONFIGURATION OPTIONS
+=======================================================
+
+For each contact group, you can configure:
+- ping_delay_hours: Number of hours to wait (default: 72)
+- ping_subject: Subject line for ping email
+- ping_text_content: Plain text version of ping email
+- ping_html_content: HTML version of ping email
+
+Example values:
+- Urgent follow-up: 24 hours (1 day)
+- Standard follow-up: 72 hours (3 days)
+- Patient follow-up: 168 hours (7 days)
+
+=======================================================
+TECHNICAL NOTES
+=======================================================
+
+1. Time Calculation:
+   - Uses milliseconds since epoch
+   - Divides by (1000 * 60 * 60) to get hours
+   - Compares hours passed with configured delay
+
+2. Database Query:
+   - Queries contact_group_members to find group
+   - Loads ping_delay_hours from contact_groups
+   - Falls back to 72 hours if not configured
+
+3. Edge Function Execution:
+   - Should be scheduled to run periodically (e.g., every hour)
+   - Processes all "awaiting_response" trackings
+   - Skips trackings where insufficient time has passed
+   - Updates status to "ping_sent" after successful send
+
+=======================================================
+SUCCESS CRITERIA MET
+=======================================================
+
+✓ Ping delay now measured in hours (not days)
+✓ Default 72 hours (equivalent to previous 3 days)
+✓ Configurable per contact group
+✓ All code updated consistently
+✓ TypeScript interfaces match database schema
+✓ Build succeeds without errors
+✓ Hour-based calculations implemented correctly
+
+=======================================================
