@@ -6,6 +6,7 @@ import SchedulePicker from "./SchedulePicker";
 import { useCreateMailing } from "../../hooks/useCreateMailing";
 import type { MailingCreatePayload } from "../../types";
 import { supabase } from "../../lib/supabase";
+import DuplicatesModal from "../DuplicatesModal";
 
 interface Props {
   open: boolean;
@@ -39,11 +40,98 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
   const [selectedContacts, setSelectedContacts] = useState<string[]>([]);
   const [expandedSubgroups, setExpandedSubgroups] = useState<Set<string>>(new Set());
 
+  // Duplicates modal state
+  const [showDuplicatesModal, setShowDuplicatesModal] = useState(false);
+  const [duplicates, setDuplicates] = useState<any[]>([]);
+  const [checkingDuplicates, setCheckingDuplicates] = useState(false);
+
+  const checkForDuplicates = async () => {
+    setCheckingDuplicates(true);
+    try {
+      const duplicatesFound: any[] = [];
+
+      // Get all sender email IDs that will be used for this mailing
+      const senderEmailIds = new Set<string>();
+
+      // Collect sender email IDs from subgroup overrides
+      for (const emailId of Object.values(payload.subgroup_email_overrides)) {
+        if (emailId) senderEmailIds.add(emailId);
+      }
+
+      // If no overrides, use default emails
+      if (senderEmailIds.size === 0 && emails.length > 0) {
+        senderEmailIds.add(emails[0].id);
+      }
+
+      // Check each selected contact for duplicates
+      for (const contactId of selectedContacts) {
+        const contact = contacts.find(c => c.id === contactId);
+        if (!contact) continue;
+
+        // Query mailing_recipients for this contact
+        const { data: recipients } = await supabase
+          .from("mailing_recipients")
+          .select(`
+            id,
+            status,
+            sent_at,
+            sender_email_id,
+            mailing:mailings (
+              id,
+              subject,
+              created_at,
+              status
+            )
+          `)
+          .eq("contact_id", contactId)
+          .in("sender_email_id", Array.from(senderEmailIds))
+          .in("status", ["sent", "completed"]);
+
+        if (recipients && recipients.length > 0) {
+          // Get sender email details
+          const { data: senderEmails } = await supabase
+            .from("emails")
+            .select("id, email")
+            .in("id", Array.from(senderEmailIds));
+
+          const mailings = recipients.map(r => ({
+            subject: r.mailing?.subject || "Без темы",
+            sent_at: r.sent_at || r.mailing?.created_at,
+            status: r.status,
+            sender_email: senderEmails?.find(e => e.id === r.sender_email_id)?.email || "",
+            created_at: r.mailing?.created_at,
+          }));
+
+          duplicatesFound.push({
+            contact_id: contactId,
+            contact_email: contact.email,
+            contact_name: contact.name,
+            mailings,
+          });
+        }
+      }
+
+      return duplicatesFound;
+    } finally {
+      setCheckingDuplicates(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!payload.send_now && (!payload.scheduled_at || !payload.scheduled_time)) {
       return alert("Укажите дату и время отправки или выберите 'Отправить сейчас'");
     }
+
+    // Check for duplicates before creating mailing
+    const duplicatesFound = await checkForDuplicates();
+    if (duplicatesFound.length > 0) {
+      setDuplicates(duplicatesFound);
+      setShowDuplicatesModal(true);
+      return;
+    }
+
+    // No duplicates, proceed with mailing creation
     await createMailing(
       { ...payload, selected_contacts: selectedContacts },
       {
@@ -51,6 +139,33 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
         selectedContactsFromUI: selectedContacts,
         contacts,
         emails,
+      }
+    );
+    onCreated?.();
+    onClose();
+  };
+
+  const handleEditMailing = () => {
+    setShowDuplicatesModal(false);
+  };
+
+  const handleExcludeAndContinue = async (excludedIds: string[]) => {
+    // Remove excluded contacts from selectedContacts
+    const filteredContacts = selectedContacts.filter(id => !excludedIds.includes(id));
+    setSelectedContacts(filteredContacts);
+
+    // Close duplicates modal
+    setShowDuplicatesModal(false);
+
+    // Proceed with mailing creation using filtered contacts
+    await createMailing(
+      { ...payload, selected_contacts: filteredContacts, exclude_contacts: excludedIds },
+      {
+        selectedSubgroups,
+        selectedContactsFromUI: filteredContacts,
+        contacts,
+        emails,
+        excludeContactsOverride: excludedIds,
       }
     );
     onCreated?.();
@@ -220,6 +335,14 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
           </div>
         </form>
       </div>
+
+      <DuplicatesModal
+        duplicates={duplicates}
+        open={showDuplicatesModal}
+        onClose={() => setShowDuplicatesModal(false)}
+        onEditMailing={handleEditMailing}
+        onExcludeAndContinue={handleExcludeAndContinue}
+      />
     </div>
   );
 }
