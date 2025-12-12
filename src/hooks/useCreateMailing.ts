@@ -296,28 +296,25 @@ export function useCreateMailing() {
         });
       }
 
-      // --- 9. Вставляем recipients в БД и (если send_now) — вызываем функцию отправки для каждого ---
+      // --- 9. Вставляем recipients в БД и (если send_now) — вызываем функцию обработки рассылки ---
       if (recipientsToCreate.length > 0) {
         const { data: insertedRecipients } = await supabase
           .from("mailing_recipients")
           .insert(recipientsToCreate)
           .select();
 
-        if (newMailing.send_now && insertedRecipients) {
+        if (newMailing.send_now && insertedRecipients && insertedRecipients.length > 0) {
           const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
           const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-          for (const recipient of insertedRecipients) {
-            // fire-and-forget запрос как в оригинале
-            fetch(`${supabaseUrl}/functions/v1/send-email`, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${supabaseKey}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({ recipient_id: recipient.id }),
-            }).catch((err) => console.error("Failed to send email:", err));
-          }
+          fetch(`${supabaseUrl}/functions/v1/process-mailing`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${supabaseKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ mailing_id: mainMailing.id }),
+          }).catch((err) => console.error("Failed to process mailing:", err));
         }
       }
 
