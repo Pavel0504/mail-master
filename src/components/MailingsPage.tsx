@@ -40,12 +40,12 @@ export function MailingsPage() {
         <button onClick={()=>setShowCreate(true)} className="px-4 py-2 bg-blue-600 text-white rounded">Создать рассылку</button>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border mb-6">
-        <nav className="flex border-b">
-          <button className={`px-6 py-3 ${activeTab==="pending" ? "text-blue-600 border-b-2 border-blue-600" : ""}`} onClick={()=>setActiveTab("pending")}>Ожидают</button>
-          <button className={`px-6 py-3 ${activeTab==="sent" ? "text-blue-600 border-b-2 border-blue-600" : ""}`} onClick={()=>setActiveTab("sent")}>Успешные</button>
-          <button className={`px-6 py-3 ${activeTab==="failed" ? "text-blue-600 border-b-2 border-blue-600" : ""}`} onClick={()=>setActiveTab("failed")}>Неудачные</button>
-          <button className={`px-6 py-3 ${activeTab==="ping" ? "text-blue-600 border-b-2 border-blue-600" : ""}`} onClick={()=>setActiveTab("ping")}>Пинг</button>
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 mb-6">
+        <nav className="flex border-b border-gray-200 dark:border-gray-700">
+          <button className={`px-6 py-3 ${activeTab==="pending" ? "text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400" : "text-gray-600 dark:text-gray-300"}`} onClick={()=>setActiveTab("pending")}>Ожидают</button>
+          <button className={`px-6 py-3 ${activeTab==="sent" ? "text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400" : "text-gray-600 dark:text-gray-300"}`} onClick={()=>setActiveTab("sent")}>Успешные</button>
+          <button className={`px-6 py-3 ${activeTab==="failed" ? "text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400" : "text-gray-600 dark:text-gray-300"}`} onClick={()=>setActiveTab("failed")}>Неудачные</button>
+          <button className={`px-6 py-3 ${activeTab==="ping" ? "text-blue-600 dark:text-blue-400 border-b-2 border-blue-600 dark:border-blue-400" : "text-gray-600 dark:text-gray-300"}`} onClick={()=>setActiveTab("ping")}>Пинг</button>
         </nav>
 
         {activeTab === "ping" ? <MailingsPingPage /> : (

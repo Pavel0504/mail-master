@@ -40,6 +40,16 @@ export default function DuplicatesModal({
     setIncluded(newIncluded);
   };
 
+  const toggleSelectAll = () => {
+    if (included.size === duplicates.length) {
+      // If all are selected, deselect all
+      setIncluded(new Set());
+    } else {
+      // Select all
+      setIncluded(new Set(duplicates.map(dup => dup.contact_id)));
+    }
+  };
+
   const handleContinue = () => {
     // Get IDs of contacts that are NOT included (unchecked = exclude)
     const excludedIds = duplicates
@@ -68,6 +78,20 @@ export default function DuplicatesModal({
           <p className="text-sm text-yellow-800 dark:text-yellow-200">
             Отметьте галочкой контакты, которым нужно отправить письмо несмотря на дубль. Неотмеченные контакты будут исключены из рассылки.
           </p>
+        </div>
+
+        <div className="mb-4 p-3 bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={included.size === duplicates.length && duplicates.length > 0}
+              onChange={toggleSelectAll}
+              className="w-4 h-4 cursor-pointer"
+            />
+            <span className="text-sm font-medium text-gray-900 dark:text-white">
+              Выделить все ({duplicates.length})
+            </span>
+          </label>
         </div>
 
         <div className="mb-6 space-y-2 max-h-96 overflow-y-auto">
