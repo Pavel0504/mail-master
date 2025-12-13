@@ -1,5 +1,5 @@
 // src/hooks/useCreateMailing.ts
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { useAuth } from "../contexts/AuthContext";
 
@@ -33,6 +33,7 @@ export function useCreateMailing() {
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const executingRef = useRef(false);
 
   /**
    * createMailing: переносит логику proceedWithMailingCreation из MailingsPage.tsx
@@ -47,6 +48,14 @@ export function useCreateMailing() {
     opts: CreateMailingOptions
   ) => {
     if (!user) throw new Error("Неавторизованный пользователь");
+
+    // Защита от множественных одновременных вызовов
+    if (executingRef.current) {
+      console.warn("Создание рассылки уже выполняется, игнорируем повторный вызов");
+      return;
+    }
+
+    executingRef.current = true;
     setLoading(true);
     setError(null);
 
@@ -58,47 +67,9 @@ export function useCreateMailing() {
         scheduledAt = new Date(dateTime).toISOString();
       }
 
-      // --- 2. собираем все контакт IDs из выбранных групп/подгрупп/индивидуально выбранных контактов ---
-      let allContactIds: string[] = [];
-
-      // Если выбраны группы - собираем контакты из всех их подгрупп
-      for (const groupId of newMailing.selected_groups) {
-        const { data: subgroups } = await supabase
-          .from("contact_groups")
-          .select("id")
-          .eq("parent_group_id", groupId);
-
-        if (subgroups && subgroups.length > 0) {
-          for (const subgroup of subgroups) {
-            const { data: subgroupMembers } = await supabase
-              .from("contact_group_members")
-              .select("contact_id")
-              .eq("group_id", subgroup.id);
-
-            if (subgroupMembers) {
-              allContactIds.push(...subgroupMembers.map((m: any) => m.contact_id));
-            }
-          }
-        }
-      }
-
-      // Если выбраны подгруппы явно — добавляем контакты из них
-      for (const subgroupId of opts.selectedSubgroups) {
-        const { data: subgroupMembers } = await supabase
-          .from("contact_group_members")
-          .select("contact_id")
-          .eq("group_id", subgroupId);
-
-        if (subgroupMembers) {
-          allContactIds.push(...subgroupMembers.map((m: any) => m.contact_id));
-        }
-      }
-
-      // Добавляем прямые выбранные контакты (UI)
-      allContactIds.push(...(opts.selectedContactsFromUI || []));
-
-      // Убираем дубликаты
-      allContactIds = Array.from(new Set(allContactIds));
+      // --- 2. используем ТОЧНО тот список контактов, который выбран в UI ---
+      // Берем контакты напрямую из UI, без повторного сбора из групп
+      const allContactIds = opts.selectedContactsFromUI || [];
 
       // Используем переданный override списка исключений (если есть) иначе из newMailing
       const excludeList = opts.excludeContactsOverride ?? newMailing.exclude_contacts ?? [];
@@ -339,6 +310,7 @@ export function useCreateMailing() {
       throw err;
     } finally {
       setLoading(false);
+      executingRef.current = false;
     }
   };
 
