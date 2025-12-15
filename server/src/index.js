@@ -9,10 +9,54 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
-  credentials: true
-}));
+/**
+ * Parse and normalize allowed origins from env.
+ * Example env value:
+ *   CORS_ORIGIN="http://localhost:5173,https://af022b9b5f5d.ngrok-free.app,https://mail-delivery-master.netlify.app"
+ */
+const rawOrigins = process.env.CORS_ORIGIN || 'http://localhost:5173';
+const allowedOrigins = rawOrigins
+  .split(',')
+  .map(s => (s || '').trim())
+  .filter(Boolean)
+  .map(o => (o.endsWith('/') ? o.slice(0, -1) : o)); // remove trailing slash
+
+console.log('CORS allowed origins:', allowedOrigins);
+
+app.use(
+  cors({
+    // origin callback: allow if origin is in whitelist, allow requests with no origin (curl/postman)
+    origin: (origin, callback) => {
+      // origin === undefined for non-browser requests (curl, Postman)
+      if (!origin) return callback(null, true);
+
+      const norm = origin.endsWith('/') ? origin.slice(0, -1) : origin;
+      if (allowedOrigins.includes(norm)) {
+        return callback(null, true);
+      }
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'apikey', 'Accept', 'Origin']
+  })
+);
+
+// respond to preflight requests for any route
+app.options('*', cors());
+
+/**
+ * Friendly handler for CORS rejection to return 403 instead of generic 500
+ * This middleware should come after the cors() middleware.
+ */
+app.use((err, req, res, next) => {
+  if (err && err.message === 'Not allowed by CORS') {
+    console.warn(`CORS denied for origin: ${req.headers.origin}`);
+    return res.status(403).json({ success: false, message: 'CORS origin denied' });
+  }
+  // pass other errors down the chain
+  next(err);
+});
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -272,7 +316,7 @@ app.post('/api/send-email', async (req, res) => {
       const processedText = replaceNamePlaceholder(emailTextContent);
       const processedHtml = replaceNamePlaceholder(emailHtmlContent);
       const textAsHtml = processedText.replace(/\r\n/g, '<br>').replace(/\n/g, '<br>').replace(/\r/g, '<br>');
-      htmlContent = `<div style="font-family: Arial, sans-serif; white-space: pre-wrap;">${textAsHtml}</div><br>${processedHtml}`;
+      htmlContent = `<div style="font-family: Arial, sans-serif;">${textAsHtml}</div><br>${processedHtml}`;
       textContent = processedText;
     } else if (hasText) {
       textContent = replaceNamePlaceholder(emailTextContent);
@@ -488,12 +532,12 @@ app.use((err, req, res, next) => {
   res.status(500).json({
     success: false,
     error: 'Internal server error',
-    message: err.message
+    message: err ? err.message : undefined
   });
 });
 
 app.listen(PORT, () => {
   console.log(`MailServerCE Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV}`);
-  console.log(`CORS enabled for: ${process.env.CORS_ORIGIN || 'http://localhost:5173'}`);
+  console.log(`CORS enabled for: ${allowedOrigins.join(', ')}`);
 });

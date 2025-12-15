@@ -51,10 +51,10 @@ export default function DuplicatesModal({
   };
 
   const handleContinue = () => {
-    // Get IDs of contacts that are NOT included (unchecked = exclude)
+    // Get IDs of contacts that ARE included (checked = exclude)
     const excludedIds = duplicates
       .map(dup => dup.contact_id)
-      .filter(id => !included.has(id));
+      .filter(id => included.has(id));
     onExcludeAndContinue(excludedIds);
   };
 
@@ -76,7 +76,7 @@ export default function DuplicatesModal({
 
         <div className="mb-4 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
           <p className="text-sm text-yellow-800 dark:text-yellow-200">
-            Отметьте галочкой контакты, которым нужно отправить письмо несмотря на дубль. Неотмеченные контакты будут исключены из рассылки.
+            Отметьте галочкой контакты, которые нужно ИСКЛЮЧИТЬ из рассылки. Неотмеченные контакты получат письмо.
           </p>
         </div>
 
@@ -216,7 +216,7 @@ export default function DuplicatesModal({
             onClick={handleContinue}
             className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
           >
-            Продолжить без выделенных
+            Исключить отмеченные и продолжить
           </button>
         </div>
       </div>
