@@ -89,8 +89,7 @@ export function useMailingSender() {
   };
 
   const processMailing = async (mailingId: string, totalRecipients: number) => {
-    const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-    const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+    const serverUrl = import.meta.env.VITE_SERVER_URL;
 
     let sentCount = 0;
     let successCount = 0;
@@ -125,11 +124,9 @@ export function useMailingSender() {
         }));
 
         // Вызываем send-email для этого получателя
-        const sendResponse = await fetch(`${supabaseUrl}/functions/v1/send-email`, {
+        const sendResponse = await fetch(`${serverUrl}/api/send-email`, {
           method: "POST",
           headers: {
-            "apikey": supabaseKey,
-            "Authorization": `Bearer ${supabaseKey}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ recipient_id: recipientId }),

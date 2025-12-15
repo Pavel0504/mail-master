@@ -275,13 +275,11 @@ export function useCreateMailing() {
           .select();
 
         if (newMailing.send_now && insertedRecipients && insertedRecipients.length > 0) {
-          const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-          const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+          const serverUrl = import.meta.env.VITE_SERVER_URL;
 
-          fetch(`${supabaseUrl}/functions/v1/process-mailing`, {
+          fetch(`${serverUrl}/api/process-mailing`, {
             method: "POST",
             headers: {
-              Authorization: `Bearer ${supabaseKey}`,
               "Content-Type": "application/json",
             },
             body: JSON.stringify({ mailing_id: mainMailing.id }),

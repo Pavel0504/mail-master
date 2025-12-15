@@ -706,7 +706,7 @@ export function GroupDetailPage({ groupId, onBack, onOpenSubgroup }: GroupDetail
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-1 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Контакты слева */}
         <div>
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">

@@ -581,7 +581,7 @@ export function ContactsPage() {
                       )}
                     </div>
 
-                    <div className="grid grid-cols-1 lg:grid-cols-1 gap-6">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                       <div>
                         <h4 className="font-semibold text-gray-900 dark:text-white mb-3">История изменений ({contactHistory.filter((h) => h.action_type === 'update').length})</h4>
                         {contactHistory.filter((h) => h.action_type === 'update').length === 0 ? (

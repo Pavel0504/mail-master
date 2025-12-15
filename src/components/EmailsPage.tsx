@@ -258,7 +258,7 @@ export function EmailsPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-1 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="space-y-4">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Список почт</h2>
           {emails.length === 0 ? (

@@ -68,11 +68,16 @@ Deno.serve(async (req: Request) => {
         const sendResponse = await fetch(`${supabaseUrl}/functions/v1/send-email`, {
           method: "POST",
           headers: {
+            "apikey": supabaseServiceKey,
             "Authorization": `Bearer ${supabaseServiceKey}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ recipient_id: recipient.id }),
         });
+
+        // Логируем статус и тело ответа для диагностики
+const sendText = await sendResponse.text();
+console.log(`send-email => status: ${sendResponse.status}, body: ${sendText}`);
 
         const sendResult = await sendResponse.json();
 
