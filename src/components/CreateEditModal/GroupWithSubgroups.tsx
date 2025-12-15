@@ -71,7 +71,7 @@ export function GroupWithSubgroups(props: Props) {
     <div className="border rounded-lg overflow-hidden">
       <div className="w-full p-3 bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-3">
         <input type="checkbox" checked={isSelected} onChange={(e) => onCheckChange(e.target.checked)} className="w-4 h-4" />
-        <button onClick={onToggle} className="flex items-center gap-3 flex-1 text-left">
+        <button type="button" onClick={onToggle} className="flex items-center gap-3 flex-1 text-left">
           <ChevronDown className={`w-5 h-5 transition-transform ${isExpanded ? "" : "-rotate-90"}`} />
           <div>
             <div className="font-medium text-sm">{group.name}</div>
@@ -93,7 +93,7 @@ export function GroupWithSubgroups(props: Props) {
                   <div key={sg.id} className="border rounded">
                     <div className="p-2 flex items-center gap-2">
                       <input type="checkbox" checked={isSubChecked} onChange={(e) => onSubgroupCheck(sg.id, e.target.checked)} className="w-4 h-4" />
-                      <button onClick={() => { onSubgroupToggle(sg.id); if (!isSubExpanded) loadContactsForSubgroup(sg.id); }} className="flex-1 text-left flex items-center gap-2">
+                      <button type="button" onClick={() => { onSubgroupToggle(sg.id); if (!isSubExpanded) loadContactsForSubgroup(sg.id); }} className="flex-1 text-left flex items-center gap-2">
                         <ChevronDown className={`w-4 h-4 transition-transform ${isSubExpanded ? "" : "-rotate-90"}`} />
                         <div className="text-sm">{sg.name}</div>
                       </button>
