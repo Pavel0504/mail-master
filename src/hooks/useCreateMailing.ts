@@ -166,7 +166,9 @@ export function useCreateMailing() {
           html_content: mailingHtmlContent,
           scheduled_at: scheduledAt,
           timezone: newMailing.timezone,
-          status: newMailing.send_now ? "sending" : "pending",
+          // <<< Изменение: всегда устанавливаем стартовый статус 'pending'.
+          // Если send_now === true — мы оставляем отправку на process-mailing, который атомарно выставит 'sending'.
+          status: "pending",
           sent_count: 0,
           success_count: 0,
           failed_count: 0,
