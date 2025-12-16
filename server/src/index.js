@@ -154,12 +154,6 @@ async function resolvePingContentForContact(contactId, mailing) {
   }
 }
 
-/**
- * POST /api/process-mailing
- * Starts processing a mailing. Now attempts to atomically mark mailing.status = 'sending'
- * only if it's not already 'sending'. If another process already marked it as 'sending',
- * this request will return early and not start a duplicate worker.
- */
 app.post('/api/process-mailing', async (req, res) => {
   try {
     const { mailing_id } = req.body;
@@ -186,8 +180,8 @@ app.post('/api/process-mailing', async (req, res) => {
       return res.status(500).json({ success: false, error: 'Failed to mark mailing as sending' });
     }
 
-    // If nothing was updated, someone else likely started processing this mailing already
     if (!updatedMailing || updatedMailing.length === 0) {
+      // someone else already started processing this mailing or it was already 'sending'
       console.log(`Mailing ${mailing_id} is already being processed by another worker`);
       return res.json({
         success: true,
@@ -205,7 +199,6 @@ app.post('/api/process-mailing', async (req, res) => {
 
     if (!recipients || recipients.length === 0) {
       console.log(`No pending recipients for mailing ${mailing_id}`);
-      // update mailing to completed if there are no recipients? keep original behavior: return processed 0
       return res.json({
         success: true,
         message: 'No pending recipients',
@@ -223,7 +216,6 @@ app.post('/api/process-mailing', async (req, res) => {
       total_recipients: recipients.length
     });
 
-    // Start actual queue processing (B: atomic per-recipient grabbing inside processMailingQueue)
     processMailingQueue(mailing_id).catch(err => {
       console.error(`Error processing mailing queue ${mailing_id}:`, err);
     });
@@ -239,13 +231,12 @@ app.post('/api/process-mailing', async (req, res) => {
 
 /**
  * processMailingQueue
- * New behavior (B): do NOT iterate over a previously fetched recipients array.
- * Instead, repeatedly attempt to atomically "grab" exactly one pending recipient
- * (update status pending->processing with a conditional update and select the row).
- * This prevents two parallel workers from processing the same recipient.
+ * Robust two-step atomical grabbing:
+ * 1) SELECT id FROM mailing_recipients WHERE mailing_id = X AND status = 'pending' LIMIT 1
+ * 2) UPDATE mailing_recipients SET status = 'processing' WHERE id = <id> AND status = 'pending'
  *
- * For each grabbed recipient we call the existing /api/send-email endpoint
- * (keeps send-email route intact). We preserve the original random delay between sends.
+ * This version attempts to set processing_started_at, but falls back to updating only status
+ * if the column does not exist (handles schema without processing_started_at).
  */
 async function processMailingQueue(mailingId) {
   console.log(`[Queue ${mailingId}] Starting atomic loop`);
@@ -259,33 +250,80 @@ async function processMailingQueue(mailingId) {
 
   while (true) {
     try {
-      // Attempt to atomically claim one pending recipient: pending -> processing
-      const { data: grabbed, error: grabErr } = await supabase
+      // STEP 1: find one pending recipient id
+      const { data: pendingRows, error: selErr } = await supabase
         .from('mailing_recipients')
-        .update({ status: 'processing', processing_started_at: new Date().toISOString() })
+        .select('id')
         .eq('mailing_id', mailingId)
         .eq('status', 'pending')
-        .limit(1)
-        .select('*')
-        .single()
-        .catch(e => ({ data: null, error: e }));
+        .limit(1);
 
-      if (grabErr) {
-        // If the error indicates no rows, break; otherwise log and break to avoid tight loop
-        console.warn(`[Queue ${mailingId}] grab error (or no rows):`, grabErr);
+      if (selErr) {
+        console.error(`[Queue ${mailingId}] Error selecting pending recipient:`, selErr);
         break;
       }
 
-      if (!grabbed) {
-        // Nothing grabbed — likely no pending rows left
-        console.log(`[Queue ${mailingId}] no pending recipients to grab`);
+      if (!pendingRows || pendingRows.length === 0) {
+        console.log(`[Queue ${mailingId}] No pending recipients found - exiting loop`);
         break;
       }
 
+      const candidateId = pendingRows[0].id;
       processedCount++;
-      console.log(`[Queue ${mailingId}] Grabbed recipient ${grabbed.id} (${processedCount}) for processing`);
+      console.log(`[Queue ${mailingId}] Candidate pending id: ${candidateId} (attempt ${processedCount})`);
 
-      // Call existing /api/send-email endpoint for the grabbed recipient
+      // STEP 2: attempt to atomically mark this row as 'processing' only if it is still pending
+      // Try with processing_started_at, fallback to without it if DB reports missing column.
+      let updatedRows = null;
+      let updateError = null;
+
+      try {
+        const resp = await supabase
+          .from('mailing_recipients')
+          .update({ status: 'processing', processing_started_at: new Date().toISOString() })
+          .eq('id', candidateId)
+          .eq('status', 'pending')
+          .select();
+
+        updatedRows = resp.data;
+        updateError = resp.error;
+      } catch (e) {
+        // supabase client sometimes throws — capture
+        updateError = e;
+      }
+
+      // If error mentions missing column, try again without processing_started_at
+      const updateErrorMessage = String(updateError?.message || updateError || '').toLowerCase();
+      if (updateError && updateErrorMessage.includes('processing_started_at')) {
+        console.warn(`[Queue ${mailingId}] processing_started_at column missing, retrying update without it`);
+        const resp2 = await supabase
+          .from('mailing_recipients')
+          .update({ status: 'processing' })
+          .eq('id', candidateId)
+          .eq('status', 'pending')
+          .select();
+
+        updatedRows = resp2.data;
+        updateError = resp2.error;
+      }
+
+      if (updateError) {
+        console.error(`[Queue ${mailingId}] Error updating candidate ${candidateId} -> processing:`, updateError);
+        // small sleep to avoid busy-loop on persistent error
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
+
+      if (!updatedRows || updatedRows.length === 0) {
+        // Someone else grabbed it first — continue loop to try next pending row
+        console.log(`[Queue ${mailingId}] Candidate ${candidateId} was grabbed by another worker (race)`);
+        continue;
+      }
+
+      const grabbed = Array.isArray(updatedRows) ? updatedRows[0] : updatedRows;
+      console.log(`[Queue ${mailingId}] Successfully grabbed recipient ${grabbed.id} for processing`);
+
+      // Call existing /api/send-email for this recipient
       try {
         const sendResponse = await fetch(`${serverUrl}/api/send-email`, {
           method: 'POST',
@@ -296,11 +334,11 @@ async function processMailingQueue(mailingId) {
           body: JSON.stringify({ recipient_id: grabbed.id })
         });
 
-        let sendResult = null;
+        let sendResult;
         try {
           sendResult = await sendResponse.json();
         } catch (parseErr) {
-          console.error(`[Queue ${mailingId}] Failed to parse send-email response for recipient ${grabbed.id}:`, parseErr);
+          console.error(`[Queue ${mailingId}] Failed to parse send-email response for ${grabbed.id}:`, parseErr);
           sendResult = { success: false, message: 'Invalid JSON response from send-email' };
         }
 
@@ -309,17 +347,15 @@ async function processMailingQueue(mailingId) {
           console.log(`[Queue ${mailingId}] Successfully sent to recipient ${grabbed.id}`);
         } else {
           failedCount++;
-          console.log(`[Queue ${mailingId}] Failed to send to recipient ${grabbed.id}: ${sendResult?.message || 'unknown error'}`);
+          console.log(`[Queue ${mailingId}] Failed to send to recipient ${grabbed.id}: ${sendResult?.message || 'unknown'}`);
         }
 
       } catch (sendErr) {
         failedCount++;
-        console.error(`[Queue ${mailingId}] Error when calling send-email for recipient ${grabbed.id}:`, sendErr);
+        console.error(`[Queue ${mailingId}] Error calling send-email for ${grabbed.id}:`, sendErr);
       }
 
-      // Wait random delay between sends, unless there are no pending recipients left (we check quickly)
-      // Here we perform the same random delay logic as before.
-      // But to avoid unnecessary wait when queue is empty, you might choose to skip at the end — keeping original behavior.
+      // Random delay like before
       const minDelay = 8000;
       const maxDelay = 25000;
       const randomDelay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
@@ -327,7 +363,6 @@ async function processMailingQueue(mailingId) {
       await new Promise(resolve => setTimeout(resolve, randomDelay));
 
     } catch (outer) {
-      // If anything unexpected happens, log and break to avoid infinite error loops.
       console.error(`[Queue ${mailingId}] Outer loop error:`, outer);
       break;
     }
@@ -335,7 +370,7 @@ async function processMailingQueue(mailingId) {
 
   console.log(`[Queue ${mailingId}] Completed loop: processed=${processedCount} success=${successCount} failed=${failedCount}`);
 
-  // After loop, check if any pending recipients remain; if none — update mailing final status
+  // Finalize mailing status if no pending left
   try {
     const { data: pendingCheck } = await supabase
       .from('mailing_recipients')
@@ -591,6 +626,7 @@ app.post('/api/send-email', async (req, res) => {
         pingScheduledAt = new Date(Date.now() + delayMs).toISOString();
       }
 
+      // Full payload (works on newer schema)
       const insertPayload = {
         mailing_recipient_id: recipient_id,
         initial_sent_at: initialSentAt,
@@ -603,17 +639,53 @@ app.post('/api/send-email', async (req, res) => {
         ping_html_content: pingContent.ping_html_content,
         ping_delay_hours: pingContent.ping_delay_hours,
         ping_delay_days: pingContent.ping_delay_days,
-        ping_scheduled_at: pingScheduledAt, // if table doesn't have this column, remove it
+        ping_scheduled_at: pingScheduledAt, // if table doesn't have this column, fallback will handle it
         status: 'awaiting_response'
       };
 
-      const { data: pingData, error: pingErr } = await supabase
-        .from('mailing_ping_tracking')
-        .insert(insertPayload)
-        .select();
+      // Try full insert first
+      let pingData = null;
+      let pingErr = null;
+      try {
+        const resp = await supabase
+          .from('mailing_ping_tracking')
+          .insert(insertPayload)
+          .select();
+        pingData = resp.data;
+        pingErr = resp.error;
+      } catch (e) {
+        pingErr = e;
+      }
 
+      // If insert failed and error indicates missing column(s) -> fallback to minimal insert
+      const pingErrMsg = String(pingErr?.message || pingErr || '').toLowerCase();
       if (pingErr) {
-        console.warn('Failed to create ping tracking row:', pingErr);
+        if (pingErrMsg.includes('could not find') || pingErrMsg.includes('pgrst204') || pingErrMsg.includes('column') || pingErrMsg.includes('does not exist')) {
+          console.warn('Full ping insert failed due to missing column(s), retrying with minimal payload.');
+          const minimalPayload = {
+            mailing_recipient_id: recipient_id,
+            initial_sent_at: initialSentAt,
+            response_received: false,
+            ping_sent: false,
+            status: 'awaiting_response'
+          };
+
+          try {
+            const resp2 = await supabase
+              .from('mailing_ping_tracking')
+              .insert(minimalPayload)
+              .select();
+            if (resp2.error) {
+              console.warn('Failed to create ping tracking row (minimal):', resp2.error);
+            } else {
+              console.log('Ping tracking created (minimal):', resp2.data);
+            }
+          } catch (innerErr) {
+            console.error('Failed to create ping tracking row (minimal) due to exception:', innerErr);
+          }
+        } else {
+          console.warn('Failed to create ping tracking row:', pingErr);
+        }
       } else {
         console.log('Ping tracking created:', pingData);
       }
