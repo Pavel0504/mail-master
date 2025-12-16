@@ -200,6 +200,92 @@ async function processMailingQueue(mailingId, recipients) {
   }
 }
 
+/**
+ * Helper: resolve ping content from the contact's subgroup(s) without walking parent_group_id.
+ * - Checks contact_group_members for groups the contact belongs to.
+ * - Fetches those groups and picks the first group that contains any ping fields.
+ * - Falls back to mailing-level ping fields if none found.
+ */
+async function resolvePingContentForContact(contactId, mailing) {
+  try {
+    const { data: groupMembers, error: gmErr } = await supabase
+      .from('contact_group_members')
+      .select('group_id')
+      .eq('contact_id', contactId);
+
+    if (gmErr) {
+      console.warn('resolvePingContentForContact: error fetching group members', gmErr);
+    }
+
+    if (!groupMembers || groupMembers.length === 0) {
+      // no groups -> fallback to mailing
+      return {
+        ping_subject: mailing?.ping_subject || null,
+        ping_text_content: mailing?.ping_text_content || null,
+        ping_html_content: mailing?.ping_html_content || null,
+        ping_delay_hours: mailing?.ping_delay_hours ?? null,
+        ping_delay_days: mailing?.ping_delay_days ?? null
+      };
+    }
+
+    const groupIds = groupMembers.map(g => g.group_id);
+
+    const { data: groups, error: groupsErr } = await supabase
+      .from('contact_groups')
+      .select('id, ping_subject, ping_text_content, ping_html_content, ping_delay_hours, ping_delay_days')
+      .in('id', groupIds);
+
+    if (groupsErr) {
+      console.warn('resolvePingContentForContact: error fetching groups', groupsErr);
+      // fallback to mailing
+      return {
+        ping_subject: mailing?.ping_subject || null,
+        ping_text_content: mailing?.ping_text_content || null,
+        ping_html_content: mailing?.ping_html_content || null,
+        ping_delay_hours: mailing?.ping_delay_hours ?? null,
+        ping_delay_days: mailing?.ping_delay_days ?? null
+      };
+    }
+
+    // find first group that has any ping fields
+    const groupWithPing = (groups || []).find(g =>
+      (g.ping_subject && String(g.ping_subject).trim() !== '') ||
+      (g.ping_text_content && String(g.ping_text_content).trim() !== '') ||
+      (g.ping_html_content && String(g.ping_html_content).trim() !== '')
+    );
+
+    const chosen = groupWithPing || (groups && groups[0]) || null;
+
+    if (!chosen) {
+      return {
+        ping_subject: mailing?.ping_subject || null,
+        ping_text_content: mailing?.ping_text_content || null,
+        ping_html_content: mailing?.ping_html_content || null,
+        ping_delay_hours: mailing?.ping_delay_hours ?? null,
+        ping_delay_days: mailing?.ping_delay_days ?? null
+      };
+    }
+
+    return {
+      ping_subject: chosen.ping_subject || null,
+      ping_text_content: chosen.ping_text_content || null,
+      ping_html_content: chosen.ping_html_content || null,
+      ping_delay_hours: chosen.ping_delay_hours ?? null,
+      ping_delay_days: chosen.ping_delay_days ?? null
+    };
+
+  } catch (err) {
+    console.error('resolvePingContentForContact unexpected error', err);
+    return {
+      ping_subject: mailing?.ping_subject || null,
+      ping_text_content: mailing?.ping_text_content || null,
+      ping_html_content: mailing?.ping_html_content || null,
+      ping_delay_hours: mailing?.ping_delay_hours ?? null,
+      ping_delay_days: mailing?.ping_delay_days ?? null
+    };
+  }
+}
+
 app.post('/api/send-email', async (req, res) => {
   let recipient_id = null;
 
@@ -411,18 +497,51 @@ app.post('/api/send-email', async (req, res) => {
       })
       .eq('id', sender_email.id);
 
-    const { data: pingData } = await supabase
-      .from('mailing_ping_tracking')
-      .insert({
-        mailing_recipient_id: recipient_id,
-        initial_sent_at: new Date().toISOString(),
-        response_received: false,
-        ping_sent: false,
-        status: 'awaiting_response'
-      })
-      .select();
+    // ----------------- REPLACED: create ping tracking with subgroup data (no parent lookup) -----------------
+    try {
+      const pingContent = await resolvePingContentForContact(contact.id, mailing);
 
-    console.log('Ping tracking created:', pingData);
+      const initialSentAt = new Date().toISOString();
+
+      // optional scheduled time calculation
+      let pingScheduledAt = null;
+      const hours = Number(pingContent.ping_delay_hours || 0);
+      const days = Number(pingContent.ping_delay_days || 0);
+      if (hours > 0 || days > 0) {
+        const delayMs = (hours * 3600 + days * 86400) * 1000;
+        pingScheduledAt = new Date(Date.now() + delayMs).toISOString();
+      }
+
+      const insertPayload = {
+        mailing_recipient_id: recipient_id,
+        initial_sent_at: initialSentAt,
+        response_received: false,
+        response_received_at: null,
+        ping_sent: false,
+        ping_sent_at: null,
+        ping_subject: pingContent.ping_subject,
+        ping_text_content: pingContent.ping_text_content,
+        ping_html_content: pingContent.ping_html_content,
+        ping_delay_hours: pingContent.ping_delay_hours,
+        ping_delay_days: pingContent.ping_delay_days,
+        ping_scheduled_at: pingScheduledAt, // if table doesn't have this column, it's safe to remove
+        status: 'awaiting_response'
+      };
+
+      const { data: pingData, error: pingErr } = await supabase
+        .from('mailing_ping_tracking')
+        .insert(insertPayload)
+        .select();
+
+      if (pingErr) {
+        console.warn('Failed to create ping tracking row:', pingErr);
+      } else {
+        console.log('Ping tracking created:', pingData);
+      }
+    } catch (pingCreateErr) {
+      console.error('Error creating ping tracking:', pingCreateErr);
+    }
+    // ----------------- END ping creation -----------------
 
     res.json({
       success: true,
