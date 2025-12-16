@@ -27,6 +27,7 @@ export interface CreateMailingOptions {
   contacts: Array<any>;          // все контакты (массив объектов contacts из БД)
   emails: Array<any>;            // доступные sender emails (массив объектов emails из БД)
   excludeContactsOverride?: string[]; // если нужно передать override списка исключений
+  onProgress?: (current: number, total: number) => void; // progress callback
 }
 
 export function useCreateMailing() {
@@ -220,9 +221,12 @@ export function useCreateMailing() {
       }
 
       // --- 8. Для каждого контакта выбираем sender_email_id по приоритетам и собираем recipientsToCreate ---
-      for (const contactId of finalContacts) {
+      for (let idx = 0; idx < finalContacts.length; idx++) {
+        const contactId = finalContacts[idx];
         const contact = opts.contacts.find((c) => c.id === contactId);
         if (!contact) continue;
+
+        opts.onProgress?.(idx + 1, finalContacts.length);
 
         let senderEmailId: string | null = null;
 

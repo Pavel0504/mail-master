@@ -7,6 +7,7 @@ import { useCreateMailing } from "../../hooks/useCreateMailing";
 import type { MailingCreatePayload } from "../../types";
 import { supabase } from "../../lib/supabase";
 import DuplicatesModal from "../DuplicatesModal";
+import ProgressBar from "../ProgressBar";
 
 interface Props {
   open: boolean;
@@ -44,6 +45,9 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
   const [showDuplicatesModal, setShowDuplicatesModal] = useState(false);
   const [duplicates, setDuplicates] = useState<any[]>([]);
   const [checkingDuplicates, setCheckingDuplicates] = useState(false);
+
+  // Progress tracking state
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
 
   const checkForDuplicates = async () => {
     setCheckingDuplicates(true);
@@ -85,7 +89,7 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
           `)
           .eq("contact_id", contactId)
           .in("sender_email_id", Array.from(senderEmailIds))
-          .in("status", ["sent", "completed"]);
+          .neq("status", "failed");
 
         if (recipients && recipients.length > 0) {
           // Get sender email details
@@ -131,7 +135,9 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
       return;
     }
 
-    // No duplicates, proceed with mailing creation
+    // Show progress and proceed with mailing creation
+    setProgress({ current: 0, total: selectedContacts.length });
+
     await createMailing(
       { ...payload, selected_contacts: selectedContacts },
       {
@@ -139,6 +145,9 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
         selectedContactsFromUI: selectedContacts,
         contacts,
         emails,
+        onProgress: (current, total) => {
+          setProgress({ current, total });
+        },
       }
     );
     onCreated?.();
@@ -157,7 +166,9 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
     // Close duplicates modal
     setShowDuplicatesModal(false);
 
-    // Proceed with mailing creation using filtered contacts
+    // Show progress and proceed with mailing creation using filtered contacts
+    setProgress({ current: 0, total: filteredContacts.length });
+
     await createMailing(
       { ...payload, selected_contacts: filteredContacts, exclude_contacts: excludedIds },
       {
@@ -166,6 +177,9 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
         contacts,
         emails,
         excludeContactsOverride: excludedIds,
+        onProgress: (current, total) => {
+          setProgress({ current, total });
+        },
       }
     );
     onCreated?.();
@@ -329,8 +343,16 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
 
           <SchedulePicker payload={payload} onChange={setPayload} />
 
+          {loading && progress.total > 0 && (
+            <ProgressBar
+              current={progress.current}
+              total={progress.total}
+              label={`Обработка контактов: ${progress.current} из ${progress.total}`}
+            />
+          )}
+
           <div className="flex gap-3 pt-4 border-t">
-            <button type="button" onClick={onClose} className="flex-1 px-4 py-2 bg-gray-200 rounded-lg">Отменить</button>
+            <button type="button" onClick={onClose} disabled={loading} className="flex-1 px-4 py-2 bg-gray-200 rounded-lg">Отменить</button>
             <button type="submit" disabled={loading} className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg">{loading ? "Создание..." : "Создать"}</button>
           </div>
         </form>
