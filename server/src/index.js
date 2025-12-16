@@ -68,138 +68,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.post('/api/process-mailing', async (req, res) => {
-  try {
-    const { mailing_id } = req.body;
-
-    if (!mailing_id) {
-      return res.status(400).json({
-        success: false,
-        error: 'mailing_id is required'
-      });
-    }
-
-    console.log(`Starting mailing processing for mailing_id: ${mailing_id}`);
-
-    const { data: recipients } = await supabase
-      .from('mailing_recipients')
-      .select('id')
-      .eq('mailing_id', mailing_id)
-      .eq('status', 'pending');
-
-    if (!recipients || recipients.length === 0) {
-      console.log(`No pending recipients for mailing ${mailing_id}`);
-      return res.json({
-        success: true,
-        message: 'No pending recipients',
-        mailing_id,
-        processed: 0
-      });
-    }
-
-    console.log(`Found ${recipients.length} pending recipients for mailing ${mailing_id}`);
-
-    await supabase
-      .from('mailings')
-      .update({ status: 'sending' })
-      .eq('id', mailing_id);
-
-    res.json({
-      success: true,
-      message: 'Mailing processing started',
-      mailing_id,
-      total_recipients: recipients.length
-    });
-
-    processMailingQueue(mailing_id, recipients).catch(err => {
-      console.error(`Error processing mailing queue ${mailing_id}:`, err);
-    });
-
-  } catch (error) {
-    console.error('Error processing mailing:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-async function processMailingQueue(mailingId, recipients) {
-  console.log(`[Queue ${mailingId}] Starting sequential processing of ${recipients.length} recipients`);
-
-  let processedCount = 0;
-  let successCount = 0;
-  let failedCount = 0;
-
-  for (const recipient of recipients) {
-    try {
-      console.log(`[Queue ${mailingId}] Processing recipient ${recipient.id} (${processedCount + 1}/${recipients.length})`);
-
-      const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3001}`;
-      const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-      const sendResponse = await fetch(`${serverUrl}/api/send-email`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${serviceKey}`
-        },
-        body: JSON.stringify({ recipient_id: recipient.id })
-      });
-
-      const sendResult = await sendResponse.json();
-
-      if (sendResult.success) {
-        successCount++;
-        console.log(`[Queue ${mailingId}] Successfully sent to recipient ${recipient.id}`);
-      } else {
-        failedCount++;
-        console.log(`[Queue ${mailingId}] Failed to send to recipient ${recipient.id}: ${sendResult.message}`);
-      }
-
-      processedCount++;
-
-      if (processedCount < recipients.length) {
-        const minDelay = 8000;
-        const maxDelay = 25000;
-        const randomDelay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
-        console.log(`[Queue ${mailingId}] Waiting ${randomDelay}ms before next email...`);
-        await new Promise(resolve => setTimeout(resolve, randomDelay));
-      }
-
-    } catch (error) {
-      failedCount++;
-      console.error(`[Queue ${mailingId}] Error processing recipient ${recipient.id}:`, error);
-    }
-  }
-
-  console.log(`[Queue ${mailingId}] Completed: ${successCount} success, ${failedCount} failed out of ${processedCount} total`);
-
-  const { data: pendingCheck } = await supabase
-    .from('mailing_recipients')
-    .select('id')
-    .eq('mailing_id', mailingId)
-    .eq('status', 'pending');
-
-  if (!pendingCheck || pendingCheck.length === 0) {
-    const { data: stats } = await supabase
-      .from('mailings')
-      .select('success_count, failed_count')
-      .eq('id', mailingId)
-      .single();
-
-    if (stats) {
-      const finalStatus = (stats.success_count || 0) > 0 ? 'completed' : 'failed';
-      await supabase
-        .from('mailings')
-        .update({ status: finalStatus })
-        .eq('id', mailingId);
-
-      console.log(`[Queue ${mailingId}] Final status: ${finalStatus}`);
-    }
-  }
-}
-
 /**
  * Helper: resolve ping content from the contact's subgroup(s) without walking parent_group_id.
  * - Checks contact_group_members for groups the contact belongs to.
@@ -286,6 +154,217 @@ async function resolvePingContentForContact(contactId, mailing) {
   }
 }
 
+/**
+ * POST /api/process-mailing
+ * Starts processing a mailing. Now attempts to atomically mark mailing.status = 'sending'
+ * only if it's not already 'sending'. If another process already marked it as 'sending',
+ * this request will return early and not start a duplicate worker.
+ */
+app.post('/api/process-mailing', async (req, res) => {
+  try {
+    const { mailing_id } = req.body;
+
+    if (!mailing_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'mailing_id is required'
+      });
+    }
+
+    console.log(`Starting mailing processing request for mailing_id: ${mailing_id}`);
+
+    // A: Attempt to atomically set status = 'sending' only if current status != 'sending'
+    const { data: updatedMailing, error: updErr } = await supabase
+      .from('mailings')
+      .update({ status: 'sending' })
+      .eq('id', mailing_id)
+      .neq('status', 'sending')
+      .select();
+
+    if (updErr) {
+      console.error('Error while attempting to mark mailing as sending:', updErr);
+      return res.status(500).json({ success: false, error: 'Failed to mark mailing as sending' });
+    }
+
+    // If nothing was updated, someone else likely started processing this mailing already
+    if (!updatedMailing || updatedMailing.length === 0) {
+      console.log(`Mailing ${mailing_id} is already being processed by another worker`);
+      return res.json({
+        success: true,
+        message: 'Mailing already being processed',
+        mailing_id
+      });
+    }
+
+    // Safe to continue: get pending recipients
+    const { data: recipients } = await supabase
+      .from('mailing_recipients')
+      .select('id')
+      .eq('mailing_id', mailing_id)
+      .eq('status', 'pending');
+
+    if (!recipients || recipients.length === 0) {
+      console.log(`No pending recipients for mailing ${mailing_id}`);
+      // update mailing to completed if there are no recipients? keep original behavior: return processed 0
+      return res.json({
+        success: true,
+        message: 'No pending recipients',
+        mailing_id,
+        processed: 0
+      });
+    }
+
+    console.log(`Found ${recipients.length} pending recipients for mailing ${mailing_id}`);
+
+    res.json({
+      success: true,
+      message: 'Mailing processing started',
+      mailing_id,
+      total_recipients: recipients.length
+    });
+
+    // Start actual queue processing (B: atomic per-recipient grabbing inside processMailingQueue)
+    processMailingQueue(mailing_id).catch(err => {
+      console.error(`Error processing mailing queue ${mailing_id}:`, err);
+    });
+
+  } catch (error) {
+    console.error('Error processing mailing:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * processMailingQueue
+ * New behavior (B): do NOT iterate over a previously fetched recipients array.
+ * Instead, repeatedly attempt to atomically "grab" exactly one pending recipient
+ * (update status pending->processing with a conditional update and select the row).
+ * This prevents two parallel workers from processing the same recipient.
+ *
+ * For each grabbed recipient we call the existing /api/send-email endpoint
+ * (keeps send-email route intact). We preserve the original random delay between sends.
+ */
+async function processMailingQueue(mailingId) {
+  console.log(`[Queue ${mailingId}] Starting atomic loop`);
+
+  let processedCount = 0;
+  let successCount = 0;
+  let failedCount = 0;
+
+  const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3001}`;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  while (true) {
+    try {
+      // Attempt to atomically claim one pending recipient: pending -> processing
+      const { data: grabbed, error: grabErr } = await supabase
+        .from('mailing_recipients')
+        .update({ status: 'processing', processing_started_at: new Date().toISOString() })
+        .eq('mailing_id', mailingId)
+        .eq('status', 'pending')
+        .limit(1)
+        .select('*')
+        .single()
+        .catch(e => ({ data: null, error: e }));
+
+      if (grabErr) {
+        // If the error indicates no rows, break; otherwise log and break to avoid tight loop
+        console.warn(`[Queue ${mailingId}] grab error (or no rows):`, grabErr);
+        break;
+      }
+
+      if (!grabbed) {
+        // Nothing grabbed — likely no pending rows left
+        console.log(`[Queue ${mailingId}] no pending recipients to grab`);
+        break;
+      }
+
+      processedCount++;
+      console.log(`[Queue ${mailingId}] Grabbed recipient ${grabbed.id} (${processedCount}) for processing`);
+
+      // Call existing /api/send-email endpoint for the grabbed recipient
+      try {
+        const sendResponse = await fetch(`${serverUrl}/api/send-email`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${serviceKey}`
+          },
+          body: JSON.stringify({ recipient_id: grabbed.id })
+        });
+
+        let sendResult = null;
+        try {
+          sendResult = await sendResponse.json();
+        } catch (parseErr) {
+          console.error(`[Queue ${mailingId}] Failed to parse send-email response for recipient ${grabbed.id}:`, parseErr);
+          sendResult = { success: false, message: 'Invalid JSON response from send-email' };
+        }
+
+        if (sendResult && sendResult.success) {
+          successCount++;
+          console.log(`[Queue ${mailingId}] Successfully sent to recipient ${grabbed.id}`);
+        } else {
+          failedCount++;
+          console.log(`[Queue ${mailingId}] Failed to send to recipient ${grabbed.id}: ${sendResult?.message || 'unknown error'}`);
+        }
+
+      } catch (sendErr) {
+        failedCount++;
+        console.error(`[Queue ${mailingId}] Error when calling send-email for recipient ${grabbed.id}:`, sendErr);
+      }
+
+      // Wait random delay between sends, unless there are no pending recipients left (we check quickly)
+      // Here we perform the same random delay logic as before.
+      // But to avoid unnecessary wait when queue is empty, you might choose to skip at the end — keeping original behavior.
+      const minDelay = 8000;
+      const maxDelay = 25000;
+      const randomDelay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
+      console.log(`[Queue ${mailingId}] Waiting ${randomDelay}ms before next attempt...`);
+      await new Promise(resolve => setTimeout(resolve, randomDelay));
+
+    } catch (outer) {
+      // If anything unexpected happens, log and break to avoid infinite error loops.
+      console.error(`[Queue ${mailingId}] Outer loop error:`, outer);
+      break;
+    }
+  }
+
+  console.log(`[Queue ${mailingId}] Completed loop: processed=${processedCount} success=${successCount} failed=${failedCount}`);
+
+  // After loop, check if any pending recipients remain; if none — update mailing final status
+  try {
+    const { data: pendingCheck } = await supabase
+      .from('mailing_recipients')
+      .select('id')
+      .eq('mailing_id', mailingId)
+      .eq('status', 'pending');
+
+    if (!pendingCheck || pendingCheck.length === 0) {
+      const { data: stats } = await supabase
+        .from('mailings')
+        .select('success_count, failed_count')
+        .eq('id', mailingId)
+        .single();
+
+      if (stats) {
+        const finalStatus = (stats.success_count || 0) > 0 ? 'completed' : 'failed';
+        await supabase
+          .from('mailings')
+          .update({ status: finalStatus })
+          .eq('id', mailingId);
+
+        console.log(`[Queue ${mailingId}] Final status set to: ${finalStatus}`);
+      }
+    }
+  } catch (postErr) {
+    console.error(`[Queue ${mailingId}] Error during finalization:`, postErr);
+  }
+}
+
 app.post('/api/send-email', async (req, res) => {
   let recipient_id = null;
 
@@ -326,7 +405,7 @@ app.post('/api/send-email', async (req, res) => {
     const recipient = recipients;
     const { mailing, contact, sender_email } = recipient;
 
-    if (recipient.status !== 'pending') {
+    if (recipient.status !== 'pending' && recipient.status !== 'processing') {
       return res.status(400).json({
         success: false,
         message: 'Already processed'
@@ -372,7 +451,7 @@ app.post('/api/send-email', async (req, res) => {
     await new Promise(resolve => setTimeout(resolve, randomDelay));
 
     const contactName = contact.name || '';
-    const replaceNamePlaceholder = (text) => text.replace(/\[NAME\]/g, contactName);
+    const replaceNamePlaceholder = (text) => String(text || '').replace(/\[NAME\]/g, contactName);
 
     const smtpHost = process.env.SMTP_HOST || 'smtp.hostinger.com';
     const smtpPort = Number(process.env.SMTP_PORT || '465');
@@ -497,7 +576,7 @@ app.post('/api/send-email', async (req, res) => {
       })
       .eq('id', sender_email.id);
 
-    // ----------------- REPLACED: create ping tracking with subgroup data (no parent lookup) -----------------
+    // ----------------- create ping tracking with subgroup data (no parent lookup) -----------------
     try {
       const pingContent = await resolvePingContentForContact(contact.id, mailing);
 
@@ -524,7 +603,7 @@ app.post('/api/send-email', async (req, res) => {
         ping_html_content: pingContent.ping_html_content,
         ping_delay_hours: pingContent.ping_delay_hours,
         ping_delay_days: pingContent.ping_delay_days,
-        ping_scheduled_at: pingScheduledAt, // if table doesn't have this column, it's safe to remove
+        ping_scheduled_at: pingScheduledAt, // if table doesn't have this column, remove it
         status: 'awaiting_response'
       };
 
