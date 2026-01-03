@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Activity, Filter } from 'lucide-react';
+import { Activity, Filter, Package } from 'lucide-react';
 import { supabase, ActivityLog, User } from '../lib/supabase';
 
 export function AdminDashboard() {
@@ -8,6 +8,7 @@ export function AdminDashboard() {
   const [filterUser, setFilterUser] = useState<string>('all');
   const [filterAction, setFilterAction] = useState<string>('all');
   const [loading, setLoading] = useState(true);
+  const [shipmentStats, setShipmentStats] = useState({ successful: 0, failed: 0 });
 
   useEffect(() => {
     loadData();
@@ -25,6 +26,16 @@ export function AdminDashboard() {
 
     if (usersData) {
       setUsers(usersData);
+    }
+
+    const { data: mailingsData } = await supabase
+      .from('mailings')
+      .select('success_count, failed_count');
+
+    if (mailingsData) {
+      const totalSuccessful = mailingsData.reduce((sum, m) => sum + (m.success_count || 0), 0);
+      const totalFailed = mailingsData.reduce((sum, m) => sum + (m.failed_count || 0), 0);
+      setShipmentStats({ successful: totalSuccessful, failed: totalFailed });
     }
 
     let query = supabase
@@ -128,6 +139,23 @@ export function AdminDashboard() {
                 </option>
               ))}
             </select>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Package className="w-5 h-5 text-gray-600 dark:text-gray-400" />
+          <h3 className="font-semibold text-gray-900 dark:text-white">Статистика отправлений</h3>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-4 border border-green-200 dark:border-green-800">
+            <div className="text-sm text-green-600 dark:text-green-400 mb-1">Успешные</div>
+            <div className="text-3xl font-bold text-green-700 dark:text-green-300">{shipmentStats.successful}</div>
+          </div>
+          <div className="bg-red-50 dark:bg-red-900/20 rounded-lg p-4 border border-red-200 dark:border-red-800">
+            <div className="text-sm text-red-600 dark:text-red-400 mb-1">Неуспешные</div>
+            <div className="text-3xl font-bold text-red-700 dark:text-red-300">{shipmentStats.failed}</div>
           </div>
         </div>
       </div>
