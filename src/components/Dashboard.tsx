@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Mail, CheckCircle, XCircle, Users, TrendingUp } from 'lucide-react';
-import { Bolt Database, Email, Contact } from '../lib/supabase';
+import { supabase, Email, Contact } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { WeeklyStatsChart } from './WeeklyStatsChart';
 
