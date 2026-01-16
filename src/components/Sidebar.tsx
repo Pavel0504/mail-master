@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Mail, Users, CheckCircle, Send, Settings, LogOut, Sun, Moon, ChevronLeft, ChevronRight, Home } from 'lucide-react';
+import { Mail, Users, CheckCircle, Send, Settings, LogOut, Sun, Moon, ChevronLeft, ChevronRight, Home, TrendingUp } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 interface SidebarProps {
@@ -13,13 +13,15 @@ export function Sidebar({ currentPage, onPageChange, theme, onThemeToggle }: Sid
   const [collapsed, setCollapsed] = useState(false);
   const { logout, user } = useAuth();
 
-  const menuItems = [
-    { id: 'emails', label: 'Почты', icon: Mail },
-    { id: 'contacts', label: 'Контакты', icon: Users },
-    { id: 'check', label: 'Проверка почты', icon: CheckCircle },
-    { id: 'mailings', label: 'Рассылки', icon: Send },
-    { id: 'settings', label: 'Настройки', icon: Settings },
-  ];
+const menuItems = [
+  { id: 'emails', label: 'Почты', icon: Mail },
+  { id: 'contacts', label: 'Контакты', icon: Users },
+  { id: 'check', label: 'Проверка почты', icon: CheckCircle },
+  { id: 'stats', label: 'Статистика', icon: TrendingUp },  // НОВАЯ СТРОКА
+  { id: 'mailings', label: 'Рассылки', icon: Send },
+  { id: 'settings', label: 'Настройки', icon: Settings },
+];
+
 
   const adminItems = [
     { id: 'all-contacts', label: 'Все контакты', icon: Users },

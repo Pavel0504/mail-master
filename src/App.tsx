@@ -13,6 +13,7 @@ import { AdminDashboard } from './components/AdminDashboard';
 import { AllContactsPage } from './components/AllContactsPage';
 import { AllMailingsPage } from './components/AllMailingsPage';
 import { UsersPage } from './components/UsersPage';
+import { StatsPage } from './components/StatsPage';
 
 function MainApp() {
   const { user, loading } = useAuth();
@@ -56,30 +57,33 @@ function MainApp() {
     return <LoginPage />;
   }
 
-  const renderPage = () => {
-    switch (currentPage) {
-      case 'dashboard':
-        return user?.role === 'admin' ? <AdminDashboard /> : <Dashboard />;
-      case 'emails':
-        return <EmailsPage />;
-      case 'contacts':
-        return <ContactsWrapper />;
-      case 'check':
-        return <EmailCheckPage />;
-      case 'mailings':
-        return <MailingsPage />;
-      case 'settings':
-        return <SettingsPage />;
-      case 'all-contacts':
-        return <AllContactsPage />;
-      case 'all-mailings':
-        return <AllMailingsPage />;
-      case 'users':
-        return <UsersPage />;
-      default:
-        return user?.role === 'admin' ? <AdminDashboard /> : <Dashboard />;
-    }
-  };
+const renderPage = () => {
+  switch (currentPage) {
+    case 'dashboard':
+      return user?.role === 'admin' ? <AdminDashboard /> : <Dashboard />;
+    case 'emails':
+      return <EmailsPage />;
+    case 'contacts':
+      return <ContactsWrapper />;
+    case 'check':
+      return <EmailCheckPage />;
+    case 'stats':  // НОВЫЙ CASE
+      return <StatsPage />;
+    case 'mailings':
+      return <MailingsPage />;
+    case 'settings':
+      return <SettingsPage />;
+    case 'all-contacts':
+      return <AllContactsPage />;
+    case 'all-mailings':
+      return <AllMailingsPage />;
+    case 'users':
+      return <UsersPage />;
+    default:
+      return user?.role === 'admin' ? <AdminDashboard /> : <Dashboard />;
+  }
+};
+
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex">
