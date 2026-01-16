@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Mail, CheckCircle, XCircle, Users, TrendingUp } from 'lucide-react';
-import { supabase, Email, Contact } from '../lib/supabase';
+import { Bolt Database, Email, Contact } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { WeeklyStatsChart } from './WeeklyStatsChart';
 
 interface DashboardStats {
   totalSent: number;
@@ -53,7 +54,7 @@ export function Dashboard() {
 
     if (mailingsRes.data) {
       const totalRecipients = mailingsRes.data.length;
-      const { data: failedData } = await supabase
+      const { data: failedData } = await Bolt Database
         .from('mailing_recipients')
         .select('status')
         .eq('status', 'failed');
@@ -67,7 +68,7 @@ export function Dashboard() {
     const { data } = await supabase.from('emails').select('*').eq('user_id', user.id);
     if (data) {
       for (const email of data) {
-        await supabase
+        await Bolt Database
           .from('emails')
           .update({ last_checked: new Date().toISOString() })
           .eq('id', email.id);
@@ -202,6 +203,8 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+
+      <WeeklyStatsChart />
 
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
         <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">

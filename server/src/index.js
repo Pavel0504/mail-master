@@ -1,35 +1,30 @@
+// src/index.js
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
-import { supabase } from './config/supabase.js';
+import Imap from 'imap';
+import { supabase } from './config/supabase.js'; // ваш existing supabase client
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-/**
- * Parse and normalize allowed origins from env.
- * Example env value:
- *   CORS_ORIGIN="http://localhost:5173,https://af022b9b5f5d.ngrok-free.app,https://mail-delivery-master.netlify.app"
- */
+// CORS parsing from env (unchanged)
 const rawOrigins = process.env.CORS_ORIGIN || 'http://localhost:5173';
 const allowedOrigins = rawOrigins
   .split(',')
   .map(s => (s || '').trim())
   .filter(Boolean)
-  .map(o => (o.endsWith('/') ? o.slice(0, -1) : o)); // remove trailing slash
+  .map(o => (o.endsWith('/') ? o.slice(0, -1) : o));
 
 console.log('CORS allowed origins:', allowedOrigins);
 
 app.use(
   cors({
-    // origin callback: allow if origin is in whitelist, allow requests with no origin (curl/postman)
     origin: (origin, callback) => {
-      // origin === undefined for non-browser requests (curl, Postman)
       if (!origin) return callback(null, true);
-
       const norm = origin.endsWith('/') ? origin.slice(0, -1) : origin;
       if (allowedOrigins.includes(norm)) {
         return callback(null, true);
@@ -42,19 +37,13 @@ app.use(
   })
 );
 
-// respond to preflight requests for any route
 app.options('*', cors());
 
-/**
- * Friendly handler for CORS rejection to return 403 instead of generic 500
- * This middleware should come after the cors() middleware.
- */
 app.use((err, req, res, next) => {
   if (err && err.message === 'Not allowed by CORS') {
     console.warn(`CORS denied for origin: ${req.headers.origin}`);
     return res.status(403).json({ success: false, message: 'CORS origin denied' });
   }
-  // pass other errors down the chain
   next(err);
 });
 
@@ -64,7 +53,7 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    service: 'MailServerCE Email Processing Server'
+    service: 'MailServerCE Email Processing Server (with IMAP save)'
   });
 });
 
@@ -73,7 +62,11 @@ app.get('/health', (req, res) => {
  * - Checks contact_group_members for groups the contact belongs to.
  * - Fetches those groups and picks the first group that contains any ping fields.
  * - Falls back to mailing-level ping fields if none found.
+ *
+ * NOTE: PING-RELATED LOGIC IS COMMENTED OUT BELOW.
  */
+
+/*
 async function resolvePingContentForContact(contactId, mailing) {
   try {
     const { data: groupMembers, error: gmErr } = await supabase
@@ -153,6 +146,201 @@ async function resolvePingContentForContact(contactId, mailing) {
     };
   }
 }
+*/
+
+/**
+ * saveToSentViaImap
+ * Attempts to APPEND given RFC-822 raw message to candidate Sent folders on IMAP server.
+ * Returns { success: boolean, mailbox?: string, info?: string }
+ *
+ * Uses node-imap (imap) library.
+ */
+async function saveToSentViaImap({
+  imapHost,
+  imapPort,
+  imapUser,
+  imapPass,
+  messageBody,
+  imapTimeoutMs = 30000,
+  maxAttempts = 6
+}) {
+  const execId = `saveToSent-${Math.floor(Math.random() * 900000 + 100000)}`;
+  console.log(`[${execId}] will try to save message of ${messageBody.length} bytes to IMAP ${imapHost}:${imapPort} as ${imapUser}`);
+
+  const baseCandidates = [
+    'Sent',
+    'Sent Messages',
+    'Sent Items',
+    'Отправленные',
+    '[Gmail]/Sent Mail'
+  ];
+
+  // Construct initial candidate list: INBOX.<name> first, then raw names
+  const candidates = [];
+  for (const b of baseCandidates) candidates.push(`INBOX.${b}`);
+  for (const b of baseCandidates) candidates.push(b);
+
+  let tried = new Set();
+  let attempts = 0;
+
+  return new Promise((resolve) => {
+    const imap = new Imap({
+      user: imapUser,
+      password: imapPass,
+      host: imapHost,
+      port: imapPort,
+      tls: true,
+      autotls: 'always',
+      keepalive: { interval: 10000, idleInterval: 300000, forceNoop: true }
+    });
+
+    let finished = false;
+
+    function finish(result) {
+      if (finished) return;
+      finished = true;
+      try { imap.end(); } catch (e) {}
+      resolve(result);
+    }
+
+    imap.once('error', (err) => {
+      console.error(`[${execId}] imap error:`, err && err.message ? err.message : err);
+      finish({ success: false, info: `IMAP connection error: ${String(err)}` });
+    });
+
+    imap.once('end', () => {
+      console.log(`[${execId}] imap connection ended`);
+    });
+
+    imap.once('ready', async () => {
+      console.log(`[${execId}] IMAP ready, will attempt APPENDs (max ${maxAttempts})`);
+
+      // helper to try append to a given mailbox and return {ok, err, serverMessage}
+      const tryAppend = (mailbox) => {
+        return new Promise((res) => {
+          let timer = setTimeout(() => {
+            // if append doesn't callback within reasonable time, treat as failure
+            const err = new Error('IMAP append timed out');
+            console.warn(`[${execId}] append timeout for mailbox ${mailbox}`);
+            res({ ok: false, err, serverMessage: null });
+          }, imapTimeoutMs);
+
+          imap.append(messageBody, { mailbox }, (err) => {
+            clearTimeout(timer);
+            if (!err) {
+              console.log(`[${execId}] APPEND succeeded for mailbox "${mailbox}"`);
+              return res({ ok: true, err: null, serverMessage: null });
+            }
+            // err is often an Error with message containing server response
+            const msg = err && err.message ? err.message : String(err);
+            console.warn(`[${execId}] APPEND failed for "${mailbox}": ${msg}`);
+            return res({ ok: false, err, serverMessage: msg });
+          });
+        });
+      };
+
+      try {
+        while (candidates.length > 0 && attempts < maxAttempts) {
+          const mailbox = candidates.shift();
+          if (!mailbox) break;
+          if (tried.has(mailbox)) continue;
+          tried.add(mailbox);
+          attempts++;
+
+          console.log(`[${execId}] attempt #${attempts} -> mailbox "${mailbox}"`);
+          const result = await tryAppend(mailbox);
+
+          if (result.ok) {
+            finish({ success: true, mailbox });
+            return;
+          }
+
+          // analyze server message for suggested prefix like "should probably be prefixed with: INBOX."
+          const srv = String(result.serverMessage || '');
+          const prefMatch = srv.match(/prefixed with:\s*([^\)\r\n]+)\.?/i);
+          if (prefMatch) {
+            const suggested = prefMatch[1].trim();
+            // sanitize suggested prefix
+            const sanitized = suggested.replace(/[^\w\[\]\/\.-]+$/g, "");
+            // if suggested looks like "INBOX." or "INBOX/", try adding it before raw names
+            // construct suggested mailbox names from remaining baseCandidates
+            console.log(`[${execId}] server suggested prefix: "${sanitized}"`);
+            for (const b of baseCandidates) {
+              const candidate = sanitized.endsWith('.') || sanitized.endsWith('/') ? `${sanitized}${b}` : `${sanitized}${b}`;
+              if (!tried.has(candidate)) {
+                // prioritize immediate retry
+                candidates.unshift(candidate);
+              }
+            }
+            // also try sanitized + original mailbox if it wasn't same
+            const combined = sanitized + (mailbox.startsWith(sanitized) ? '' : mailbox);
+            if (!tried.has(combined)) {
+              candidates.unshift(combined);
+            }
+            // go next iteration
+            continue;
+          }
+
+          // If server error included "TRYCREATE" or "Mailbox does not exist" we can attempt to create (imap.append usually creates if mailbox exists? node-imap cannot create on append)
+          // Attempt to create mailbox and retry once
+          const errMsgLower = String(result.serverMessage || '').toLowerCase();
+          if (errMsgLower.includes('does not exist') || errMsgLower.includes('trycreate') || errMsgLower.includes('no such')) {
+            try {
+              console.log(`[${execId}] attempting to create mailbox "${mailbox}" (server suggested non-existence)`);
+              await new Promise((resolveCreate, rejectCreate) => {
+                imap.addBox(mailbox, (errAdd) => {
+                  if (errAdd) {
+                    console.warn(`[${execId}] failed to create box "${mailbox}": ${errAdd && errAdd.message ? errAdd.message : errAdd}`);
+                    return resolveCreate(false);
+                  }
+                  console.log(`[${execId}] created mailbox "${mailbox}"`);
+                  return resolveCreate(true);
+                });
+              });
+              // after creation, retry append once immediately
+              const retryRes = await tryAppend(mailbox);
+              if (retryRes.ok) {
+                finish({ success: true, mailbox });
+                return;
+              } else {
+                console.warn(`[${execId}] append still failed for "${mailbox}" after create: ${String(retryRes.serverMessage || retryRes.err)}`);
+              }
+            } catch (createErr) {
+              console.warn(`[${execId}] create attempt threw:`, createErr && createErr.message ? createErr.message : createErr);
+            }
+          }
+
+          // otherwise continue with next candidate
+          console.log(`[${execId}] moving to next candidate mailbox (attempts=${attempts})`);
+        } // end while
+
+        // all attempts exhausted
+        finish({ success: false, info: `Could not append to any mailbox after ${attempts} attempts` });
+        return;
+      } catch (flowErr) {
+        console.error(`[${execId}] unexpected error while appending:`, flowErr && flowErr.message ? flowErr.message : flowErr);
+        finish({ success: false, error: String(flowErr) });
+      }
+    }); // end ready handler
+
+    // connect with timeout protection
+    let connectTimer = setTimeout(() => {
+      console.warn(`[${execId}] IMAP connection timed out after ${imapTimeoutMs}ms`);
+      try { imap.end(); } catch (e) {}
+      finish({ success: false, info: 'IMAP connection timed out' });
+    }, imapTimeoutMs * 1.5);
+
+    imap.once('ready', () => {
+      clearTimeout(connectTimer);
+    });
+
+    imap.connect();
+  });
+}
+
+// --- rest of your original server logic but replace the Supabase function call for saving to Sent
+// I will mostly reuse your /api/process-mailing and processMailingQueue and /api/send-email handlers,
+// but in /api/send-email when we previously did a fetch to supabase function, we now call saveToSentViaImap.
 
 app.post('/api/process-mailing', async (req, res) => {
   try {
@@ -167,7 +355,6 @@ app.post('/api/process-mailing', async (req, res) => {
 
     console.log(`Starting mailing processing request for mailing_id: ${mailing_id}`);
 
-    // A: Attempt to atomically set status = 'sending' only if current status != 'sending'
     const { data: updatedMailing, error: updErr } = await supabase
       .from('mailings')
       .update({ status: 'sending' })
@@ -181,7 +368,6 @@ app.post('/api/process-mailing', async (req, res) => {
     }
 
     if (!updatedMailing || updatedMailing.length === 0) {
-      // someone else already started processing this mailing or it was already 'sending'
       console.log(`Mailing ${mailing_id} is already being processed by another worker`);
       return res.json({
         success: true,
@@ -190,7 +376,6 @@ app.post('/api/process-mailing', async (req, res) => {
       });
     }
 
-    // Safe to continue: get pending recipients
     const { data: recipients } = await supabase
       .from('mailing_recipients')
       .select('id')
@@ -229,15 +414,6 @@ app.post('/api/process-mailing', async (req, res) => {
   }
 });
 
-/**
- * processMailingQueue
- * Robust two-step atomical grabbing:
- * 1) SELECT id FROM mailing_recipients WHERE mailing_id = X AND status = 'pending' LIMIT 1
- * 2) UPDATE mailing_recipients SET status = 'processing' WHERE id = <id> AND status = 'pending'
- *
- * This version attempts to set processing_started_at, but falls back to updating only status
- * if the column does not exist (handles schema without processing_started_at).
- */
 async function processMailingQueue(mailingId) {
   console.log(`[Queue ${mailingId}] Starting atomic loop`);
 
@@ -250,7 +426,6 @@ async function processMailingQueue(mailingId) {
 
   while (true) {
     try {
-      // STEP 1: find one pending recipient id
       const { data: pendingRows, error: selErr } = await supabase
         .from('mailing_recipients')
         .select('id')
@@ -272,8 +447,6 @@ async function processMailingQueue(mailingId) {
       processedCount++;
       console.log(`[Queue ${mailingId}] Candidate pending id: ${candidateId} (attempt ${processedCount})`);
 
-      // STEP 2: attempt to atomically mark this row as 'processing' only if it is still pending
-      // Try with processing_started_at, fallback to without it if DB reports missing column.
       let updatedRows = null;
       let updateError = null;
 
@@ -288,11 +461,9 @@ async function processMailingQueue(mailingId) {
         updatedRows = resp.data;
         updateError = resp.error;
       } catch (e) {
-        // supabase client sometimes throws — capture
         updateError = e;
       }
 
-      // If error mentions missing column, try again without processing_started_at
       const updateErrorMessage = String(updateError?.message || updateError || '').toLowerCase();
       if (updateError && updateErrorMessage.includes('processing_started_at')) {
         console.warn(`[Queue ${mailingId}] processing_started_at column missing, retrying update without it`);
@@ -309,13 +480,11 @@ async function processMailingQueue(mailingId) {
 
       if (updateError) {
         console.error(`[Queue ${mailingId}] Error updating candidate ${candidateId} -> processing:`, updateError);
-        // small sleep to avoid busy-loop on persistent error
         await new Promise(r => setTimeout(r, 1000));
         continue;
       }
 
       if (!updatedRows || updatedRows.length === 0) {
-        // Someone else grabbed it first — continue loop to try next pending row
         console.log(`[Queue ${mailingId}] Candidate ${candidateId} was grabbed by another worker (race)`);
         continue;
       }
@@ -323,7 +492,6 @@ async function processMailingQueue(mailingId) {
       const grabbed = Array.isArray(updatedRows) ? updatedRows[0] : updatedRows;
       console.log(`[Queue ${mailingId}] Successfully grabbed recipient ${grabbed.id} for processing`);
 
-      // Call existing /api/send-email for this recipient
       try {
         const sendResponse = await fetch(`${serverUrl}/api/send-email`, {
           method: 'POST',
@@ -355,7 +523,6 @@ async function processMailingQueue(mailingId) {
         console.error(`[Queue ${mailingId}] Error calling send-email for ${grabbed.id}:`, sendErr);
       }
 
-      // Random delay like before
       const minDelay = 8000;
       const maxDelay = 25000;
       const randomDelay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
@@ -370,7 +537,7 @@ async function processMailingQueue(mailingId) {
 
   console.log(`[Queue ${mailingId}] Completed loop: processed=${processedCount} success=${successCount} failed=${failedCount}`);
 
-  // Finalize mailing status if no pending left
+  // finalize
   try {
     const { data: pendingCheck } = await supabase
       .from('mailing_recipients')
@@ -534,40 +701,40 @@ app.post('/api/send-email', async (req, res) => {
       messageId: messageId
     };
 
+    // send
     await transporter.sendMail(mailOptions);
 
+    // build raw RFC822-ish body we append
     const emailBody = `From: ${smtpUser}\r\nTo: ${contact.email}\r\nSubject: ${replaceNamePlaceholder(emailSubject)}\r\nDate: ${dateHeader}\r\nMessage-ID: ${messageId}\r\nMIME-Version: 1.0\r\n${hasText && hasHtml ? `Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n${htmlContent}\r\n` : hasText ? `Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n${textContent}\r\n` : `Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n${htmlContent}\r\n`}`;
 
+    // --- SAVE TO SENT via local IMAP function ---
     (async () => {
       try {
-        console.log(`Saving email to Sent folder for ${smtpUser}`);
-        const supabaseUrl = process.env.SUPABASE_URL;
-        const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+        console.log(`Saving email to Sent folder for ${smtpUser} via IMAP host ${process.env.IMAP_HOST || 'imap.hostinger.com'}`);
+        const imapHost = process.env.IMAP_HOST || 'imap.hostinger.com';
+        const imapPort = Number(process.env.IMAP_PORT || '993');
 
-        const saveResponse = await fetch(`${supabaseUrl}/functions/v1/save-to-sent`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${supabaseServiceKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            email: smtpUser,
-            password: smtpPass,
-            message_body: emailBody
-          })
+        const saveResult = await saveToSentViaImap({
+          imapHost,
+          imapPort,
+          imapUser: smtpUser,
+          imapPass: smtpPass,
+          messageBody: emailBody,
+          imapTimeoutMs: Number(process.env.IMAP_OP_TIMEOUT_MS || 30000),
+          maxAttempts: Number(process.env.MAX_MAILBOX_ATTEMPTS || 6)
         });
 
-        const saveResult = await saveResponse.json();
-        if (saveResult.success) {
-          console.log('Email successfully saved to Sent folder');
+        if (saveResult && saveResult.success) {
+          console.log('Email successfully saved to Sent folder:', saveResult.mailbox || '');
         } else {
-          console.warn('Failed to save to Sent folder:', saveResult.message || saveResult.error);
+          console.warn('Failed to save to Sent folder:', saveResult.info || saveResult.error || 'unknown');
         }
       } catch (saveError) {
-        console.error('Error saving email to Sent folder:', saveError);
+        console.error('Error saving email to Sent folder:', saveError && saveError.message ? saveError.message : saveError);
       }
     })();
 
+    // update DB statuses and stats (unchanged)
     await supabase
       .from('mailing_recipients')
       .update({ status: 'sent', sent_at: new Date().toISOString() })
@@ -611,13 +778,15 @@ app.post('/api/send-email', async (req, res) => {
       })
       .eq('id', sender_email.id);
 
-    // ----------------- create ping tracking with subgroup data (no parent lookup) -----------------
+    // --- PING CREATION REMOVED ---
+    // Весь блок создания пинга (resolvePingContentForContact + вставка в mailing_ping_tracking)
+    // закомментирован/удален по запросу — не будет выполняться.
+    /*
     try {
       const pingContent = await resolvePingContentForContact(contact.id, mailing);
 
       const initialSentAt = new Date().toISOString();
 
-      // optional scheduled time calculation
       let pingScheduledAt = null;
       const hours = Number(pingContent.ping_delay_hours || 0);
       const days = Number(pingContent.ping_delay_days || 0);
@@ -626,7 +795,6 @@ app.post('/api/send-email', async (req, res) => {
         pingScheduledAt = new Date(Date.now() + delayMs).toISOString();
       }
 
-      // Full payload (works on newer schema)
       const insertPayload = {
         mailing_recipient_id: recipient_id,
         initial_sent_at: initialSentAt,
@@ -639,11 +807,10 @@ app.post('/api/send-email', async (req, res) => {
         ping_html_content: pingContent.ping_html_content,
         ping_delay_hours: pingContent.ping_delay_hours,
         ping_delay_days: pingContent.ping_delay_days,
-        ping_scheduled_at: pingScheduledAt, // if table doesn't have this column, fallback will handle it
+        ping_scheduled_at: pingScheduledAt,
         status: 'awaiting_response'
       };
 
-      // Try full insert first
       let pingData = null;
       let pingErr = null;
       try {
@@ -657,7 +824,6 @@ app.post('/api/send-email', async (req, res) => {
         pingErr = e;
       }
 
-      // If insert failed and error indicates missing column(s) -> fallback to minimal insert
       const pingErrMsg = String(pingErr?.message || pingErr || '').toLowerCase();
       if (pingErr) {
         if (pingErrMsg.includes('could not find') || pingErrMsg.includes('pgrst204') || pingErrMsg.includes('column') || pingErrMsg.includes('does not exist')) {
@@ -692,7 +858,7 @@ app.post('/api/send-email', async (req, res) => {
     } catch (pingCreateErr) {
       console.error('Error creating ping tracking:', pingCreateErr);
     }
-    // ----------------- END ping creation -----------------
+    */
 
     res.json({
       success: true,
@@ -811,4 +977,3 @@ app.listen(PORT, () => {
   console.log(`Environment: ${process.env.NODE_ENV}`);
   console.log(`CORS enabled for: ${allowedOrigins.join(', ')}`);
 });
-
