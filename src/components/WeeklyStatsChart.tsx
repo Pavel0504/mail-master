@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { TrendingUp } from 'lucide-react';
-import { Bolt Database } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
 
 interface DailyStats {
   date: string;
@@ -40,7 +40,7 @@ export function WeeklyStatsChart() {
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
       sevenDaysAgo.setHours(0, 0, 0, 0);
 
-      const { data: recipients } = await Bolt Database
+      const { data: recipients } = await supabase
         .from('mailing_recipients')
         .select(`
           sent_at,

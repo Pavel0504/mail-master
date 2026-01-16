@@ -54,7 +54,7 @@ export function Dashboard() {
 
     if (mailingsRes.data) {
       const totalRecipients = mailingsRes.data.length;
-      const { data: failedData } = await Bolt Database
+      const { data: failedData } = await supabase
         .from('mailing_recipients')
         .select('status')
         .eq('status', 'failed');
@@ -68,7 +68,7 @@ export function Dashboard() {
     const { data } = await supabase.from('emails').select('*').eq('user_id', user.id);
     if (data) {
       for (const email of data) {
-        await Bolt Database
+        await supabase
           .from('emails')
           .update({ last_checked: new Date().toISOString() })
           .eq('id', email.id);
