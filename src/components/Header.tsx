@@ -18,7 +18,10 @@ const TIMEZONES = [
   { label: 'HKT', iana: 'Asia/Hong_Kong', name: 'Hong Kong Time' },
   { label: 'JST', iana: 'Asia/Tokyo', name: 'Japan Standard Time' },
   { label: 'KST', iana: 'Asia/Seoul', name: 'Korea Standard Time' },
+  { label: 'AEST', iana: 'Australia/Sydney', name: 'Australian Eastern Standard Time' },
+  { label: 'AEDT', iana: 'Australia/Sydney', name: 'Australian Eastern Daylight Time' },
 ];
+
 
 export function Header() {
   const { user } = useAuth();

@@ -17,6 +17,8 @@ const TIMEZONES = [
   { label: 'HKT', iana: 'Asia/Hong_Kong', name: 'Hong Kong Time' },
   { label: 'JST', iana: 'Asia/Tokyo', name: 'Japan Standard Time' },
   { label: 'KST', iana: 'Asia/Seoul', name: 'Korea Standard Time' },
+  { label: 'AEST', iana: 'Australia/Sydney', name: 'Australian Eastern Standard Time' },
+  { label: 'AEDT', iana: 'Australia/Sydney', name: 'Australian Eastern Daylight Time' },
 ];
 
 export default function SchedulePicker({ payload, onChange }: { payload: MailingCreatePayload, onChange: (p: MailingCreatePayload) => void }) {
@@ -77,7 +79,7 @@ export default function SchedulePicker({ payload, onChange }: { payload: Mailing
             </div>
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400">
-            Рассылка будет отправлена автоматически в указанное время
+            Рассылка будет отправлена автоматически в указанное время в выбранном часовом поясе
           </div>
         </div>
       )}

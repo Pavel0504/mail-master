@@ -1,4 +1,4 @@
-import { Bolt Database } from './config/supabase.js';
+import { supabase } from './config/supabase.js';
 
 export class ScheduledMailingsProcessor {
   constructor(serverUrl) {
@@ -39,17 +39,14 @@ export class ScheduledMailingsProcessor {
 
   async processScheduledMailings() {
     try {
-      const now = new Date();
-      const nowISO = now.toISOString();
-
       console.log(`[${new Date().toISOString()}] Checking for scheduled mailings...`);
 
-      const { data: scheduledMailings, error } = await Bolt Database
+      // Получаем все pending рассылки с scheduled_at
+      const { data: scheduledMailings, error } = await supabase
         .from('mailings')
         .select('*')
         .eq('status', 'pending')
-        .not('scheduled_at', 'is', null)
-        .lte('scheduled_at', nowISO);
+        .not('scheduled_at', 'is', null);
 
       if (error) {
         console.error('Error fetching scheduled mailings:', error);
@@ -61,50 +58,76 @@ export class ScheduledMailingsProcessor {
         return;
       }
 
-      console.log(`Found ${scheduledMailings.length} scheduled mailing(s) ready to send`);
+      console.log(`Found ${scheduledMailings.length} scheduled mailing(s) to check`);
+
+      let processedCount = 0;
 
       for (const mailing of scheduledMailings) {
         try {
-          console.log(`Processing scheduled mailing ${mailing.id}: "${mailing.subject}"`);
-          console.log(`  Scheduled for: ${mailing.scheduled_at} (${mailing.timezone})`);
-          console.log(`  Current time: ${nowISO}`);
+          // Парсим scheduled_at и timezone
+          const scheduledDate = new Date(mailing.scheduled_at);
+          const timezone = mailing.timezone || 'UTC';
 
-          const { data: recipients } = await Bolt Database
-            .from('mailing_recipients')
-            .select('id')
-            .eq('mailing_id', mailing.id)
-            .eq('status', 'pending');
+          // Получаем текущее время в указанной таймзоне
+          const nowInTimezone = new Date().toLocaleString('en-US', { timeZone: timezone });
+          const currentTimeInTZ = new Date(nowInTimezone);
 
-          if (!recipients || recipients.length === 0) {
-            console.log(`  No pending recipients for mailing ${mailing.id}, skipping`);
-            await Bolt Database
-              .from('mailings')
-              .update({ status: 'completed' })
-              .eq('id', mailing.id);
-            continue;
-          }
+          // Получаем scheduled время в той же таймзоне
+          const scheduledTimeInTZ = new Date(scheduledDate.toLocaleString('en-US', { timeZone: timezone }));
 
-          console.log(`  Found ${recipients.length} pending recipient(s), triggering send...`);
+          console.log(`Checking mailing ${mailing.id}: "${mailing.subject}"`);
+          console.log(`  Scheduled for: ${mailing.scheduled_at} (${timezone})`);
+          console.log(`  Current time in ${timezone}: ${currentTimeInTZ.toISOString()}`);
+          console.log(`  Scheduled time in ${timezone}: ${scheduledTimeInTZ.toISOString()}`);
 
-          const response = await fetch(`${this.serverUrl}/api/process-mailing`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ mailing_id: mailing.id }),
-          });
+          // Проверяем, пришло ли время отправки
+          if (currentTimeInTZ >= scheduledDate) {
+            console.log(`  Time to send! (current >= scheduled)`);
 
-          if (response.ok) {
-            const result = await response.json();
-            console.log(`  Successfully triggered mailing ${mailing.id}:`, result);
+            const { data: recipients } = await supabase
+              .from('mailing_recipients')
+              .select('id')
+              .eq('mailing_id', mailing.id)
+              .eq('status', 'pending');
+
+            if (!recipients || recipients.length === 0) {
+              console.log(`  No pending recipients for mailing ${mailing.id}, marking as completed`);
+              await supabase
+                .from('mailings')
+                .update({ status: 'completed' })
+                .eq('id', mailing.id);
+              continue;
+            }
+
+            console.log(`  Found ${recipients.length} pending recipient(s), triggering send...`);
+
+            const response = await fetch(`${this.serverUrl}/api/process-mailing`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ mailing_id: mailing.id }),
+            });
+
+            if (response.ok) {
+              const result = await response.json();
+              console.log(`  Successfully triggered mailing ${mailing.id}:`, result);
+              processedCount++;
+            } else {
+              const errorText = await response.text();
+              console.error(`  Failed to trigger mailing ${mailing.id}: ${response.status} ${errorText}`);
+            }
           } else {
-            const errorText = await response.text();
-            console.error(`  Failed to trigger mailing ${mailing.id}: ${response.status} ${errorText}`);
+            console.log(`  Not yet time to send (current < scheduled)`);
           }
 
         } catch (mailingError) {
           console.error(`Error processing mailing ${mailing.id}:`, mailingError);
         }
+      }
+
+      if (processedCount > 0) {
+        console.log(`Processed ${processedCount} scheduled mailing(s)`);
       }
 
     } catch (error) {

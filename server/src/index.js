@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
-import { Bolt Database } from './config/supabase.js';
+import { supabase } from './config/supabase.js';
 import { ScheduledMailingsProcessor } from './scheduledMailings.js';
 
 dotenv.config();
@@ -57,7 +57,7 @@ app.get('/health', (req, res) => {
 
 async function resolvePingContentForContact(contactId, mailing) {
   try {
-    const { data: groupMembers, error: gmErr } = await Bolt Database
+    const { data: groupMembers, error: gmErr } = await supabase
       .from('contact_group_members')
       .select('group_id')
       .eq('contact_id', contactId);
@@ -78,7 +78,7 @@ async function resolvePingContentForContact(contactId, mailing) {
 
     const groupIds = groupMembers.map(g => g.group_id);
 
-    const { data: groups, error: groupsErr } = await Bolt Database
+    const { data: groups, error: groupsErr } = await supabase
       .from('contact_groups')
       .select('id, ping_subject, ping_text_content, ping_html_content, ping_delay_hours, ping_delay_days')
       .in('id', groupIds);
@@ -145,7 +145,7 @@ app.post('/api/process-mailing', async (req, res) => {
 
     console.log(`Starting mailing processing request for mailing_id: ${mailing_id}`);
 
-    const { data: updatedMailing, error: updErr } = await Bolt Database
+    const { data: updatedMailing, error: updErr } = await supabase
       .from('mailings')
       .update({ status: 'sending' })
       .eq('id', mailing_id)
@@ -166,7 +166,7 @@ app.post('/api/process-mailing', async (req, res) => {
       });
     }
 
-    const { data: recipients } = await Bolt Database
+    const { data: recipients } = await supabase
       .from('mailing_recipients')
       .select('id')
       .eq('mailing_id', mailing_id)
@@ -216,24 +216,45 @@ async function processMailingQueue(mailingId) {
 
   while (true) {
     try {
-      const { data: grabbed, error: grabErr } = await Bolt Database
+      // ИСПРАВЛЕНИЕ: Сначала выбираем одну pending запись, затем обновляем ее по ID
+      const { data: pendingRecipients, error: selectErr } = await supabase
         .from('mailing_recipients')
-        .update({ status: 'processing', processing_started_at: new Date().toISOString() })
+        .select('*')
         .eq('mailing_id', mailingId)
         .eq('status', 'pending')
-        .limit(1)
-        .select('*')
-        .single()
-        .catch(e => ({ data: null, error: e }));
+        .limit(1);
 
-      if (grabErr) {
-        console.warn(`[Queue ${mailingId}] grab error (or no rows):`, grabErr);
+      if (selectErr) {
+        console.warn(`[Queue ${mailingId}] error selecting pending recipient:`, selectErr);
         break;
       }
 
-      if (!grabbed) {
+      if (!pendingRecipients || pendingRecipients.length === 0) {
         console.log(`[Queue ${mailingId}] no pending recipients to grab`);
         break;
+      }
+
+      const grabbed = pendingRecipients[0];
+
+      // Теперь обновляем именно эту запись по ID (с проверкой что статус все еще pending)
+      const { data: updated, error: updateErr } = await supabase
+        .from('mailing_recipients')
+        .update({ 
+          status: 'processing', 
+          processing_started_at: new Date().toISOString() 
+        })
+        .eq('id', grabbed.id)
+        .eq('status', 'pending')
+        .select();
+
+      if (updateErr) {
+        console.warn(`[Queue ${mailingId}] error updating recipient ${grabbed.id}:`, updateErr);
+        continue;
+      }
+
+      if (!updated || updated.length === 0) {
+        console.log(`[Queue ${mailingId}] recipient ${grabbed.id} was already taken by another process`);
+        continue;
       }
 
       processedCount++;
@@ -285,14 +306,14 @@ async function processMailingQueue(mailingId) {
   console.log(`[Queue ${mailingId}] Completed loop: processed=${processedCount} success=${successCount} failed=${failedCount}`);
 
   try {
-    const { data: pendingCheck } = await Bolt Database
+    const { data: pendingCheck } = await supabase
       .from('mailing_recipients')
       .select('id')
       .eq('mailing_id', mailingId)
       .eq('status', 'pending');
 
     if (!pendingCheck || pendingCheck.length === 0) {
-      const { data: stats } = await Bolt Database
+      const { data: stats } = await supabase
         .from('mailings')
         .select('success_count, failed_count')
         .eq('id', mailingId)
@@ -300,7 +321,7 @@ async function processMailingQueue(mailingId) {
 
       if (stats) {
         const finalStatus = (stats.success_count || 0) > 0 ? 'completed' : 'failed';
-        await Bolt Database
+        await supabase
           .from('mailings')
           .update({ status: finalStatus })
           .eq('id', mailingId);
@@ -340,7 +361,7 @@ app.post('/api/send-email', async (req, res) => {
       });
     }
 
-    const { data: recipients, error: recipientError } = await Bolt Database
+    const { data: recipients, error: recipientError } = await supabase
       .from('mailing_recipients')
       .select('*, mailing:mailings(*), contact:contacts(*), sender_email:emails(*)')
       .eq('id', recipient_id)
@@ -364,14 +385,14 @@ app.post('/api/send-email', async (req, res) => {
     let emailTextContent = null;
     let emailHtmlContent = null;
 
-    const { data: groupMembers } = await Bolt Database
+    const { data: groupMembers } = await supabase
       .from('contact_group_members')
       .select('group_id')
       .eq('contact_id', contact.id);
 
     if (groupMembers && groupMembers.length > 0) {
       const groupId = groupMembers[0].group_id;
-      const { data: groups } = await Bolt Database
+      const { data: groups } = await supabase
         .from('contact_groups')
         .select('default_subject, default_text_content, default_html_content')
         .eq('id', groupId)
@@ -481,20 +502,20 @@ app.post('/api/send-email', async (req, res) => {
       }
     })();
 
-    await Bolt Database
+    await supabase
       .from('mailing_recipients')
       .update({ status: 'sent', sent_at: new Date().toISOString() })
       .eq('id', recipient_id);
 
     const mailingId = recipient.mailing_id;
-    const { data: currentMailing } = await Bolt Database
+    const { data: currentMailing } = await supabase
       .from('mailings')
       .select('sent_count, success_count')
       .eq('id', mailingId)
       .single();
 
     if (currentMailing) {
-      await Bolt Database
+      await supabase
         .from('mailings')
         .update({
           sent_count: (currentMailing.sent_count || 0) + 1,
@@ -503,20 +524,20 @@ app.post('/api/send-email', async (req, res) => {
         .eq('id', mailingId);
     }
 
-    const { data: pendingRecipients } = await Bolt Database
+    const { data: pendingRecipients } = await supabase
       .from('mailing_recipients')
       .select('id')
       .eq('mailing_id', mailingId)
       .eq('status', 'pending');
 
     if (!pendingRecipients || pendingRecipients.length === 0) {
-      await Bolt Database
+      await supabase
         .from('mailings')
         .update({ status: 'completed' })
         .eq('id', mailingId);
     }
 
-    await Bolt Database
+    await supabase
       .from('emails')
       .update({
         sent_count: (sender_email.sent_count || 0) + 1,
@@ -553,7 +574,7 @@ app.post('/api/send-email', async (req, res) => {
         status: 'awaiting_response'
       };
 
-      const { data: pingData, error: pingErr } = await Bolt Database
+      const { data: pingData, error: pingErr } = await supabase
         .from('mailing_ping_tracking')
         .insert(insertPayload)
         .select();
@@ -578,13 +599,13 @@ app.post('/api/send-email', async (req, res) => {
 
     try {
       if (recipient_id) {
-        await Bolt Database
+        await supabase
           .from('mailing_recipients')
           .update({ status: 'failed', error_message: errMsg })
           .eq('id', recipient_id)
           .then(() => {}).catch(() => {});
 
-        const { data: recipientData } = await Bolt Database
+        const { data: recipientData } = await supabase
           .from('mailing_recipients')
           .select('mailing_id, sender_email_id')
           .eq('id', recipient_id)
@@ -595,7 +616,7 @@ app.post('/api/send-email', async (req, res) => {
           const mailingId = recipientData.mailing_id;
           const senderEmailId = recipientData.sender_email_id;
 
-          const { data: mailingStats } = await Bolt Database
+          const { data: mailingStats } = await supabase
             .from('mailings')
             .select('sent_count, failed_count, success_count')
             .eq('id', mailingId)
@@ -603,7 +624,7 @@ app.post('/api/send-email', async (req, res) => {
             .catch(() => ({ data: null }));
 
           if (mailingStats) {
-            await Bolt Database
+            await supabase
               .from('mailings')
               .update({
                 sent_count: (mailingStats.sent_count || 0) + 1,
@@ -613,7 +634,7 @@ app.post('/api/send-email', async (req, res) => {
               .catch(() => {});
           }
 
-          const { data: pendingRecipients } = await Bolt Database
+          const { data: pendingRecipients } = await supabase
             .from('mailing_recipients')
             .select('id')
             .eq('mailing_id', mailingId)
@@ -621,7 +642,7 @@ app.post('/api/send-email', async (req, res) => {
             .catch(() => ({ data: null }));
 
           if (!pendingRecipients || pendingRecipients.length === 0) {
-            const { data: stats } = await Bolt Database
+            const { data: stats } = await supabase
               .from('mailings')
               .select('success_count, failed_count')
               .eq('id', mailingId)
@@ -630,7 +651,7 @@ app.post('/api/send-email', async (req, res) => {
 
             if (stats) {
               const finalStatus = (stats.success_count || 0) > 0 ? 'completed' : 'failed';
-              await Bolt Database
+              await supabase
                 .from('mailings')
                 .update({ status: finalStatus })
                 .eq('id', mailingId)
@@ -639,7 +660,7 @@ app.post('/api/send-email', async (req, res) => {
           }
 
           if (senderEmailId) {
-            const { data: emailStats } = await Bolt Database
+            const { data: emailStats } = await supabase
               .from('emails')
               .select('sent_count, failed_count')
               .eq('id', senderEmailId)
@@ -647,7 +668,7 @@ app.post('/api/send-email', async (req, res) => {
               .catch(() => ({ data: null }));
 
             if (emailStats) {
-              await Bolt Database
+              await supabase
                 .from('emails')
                 .update({
                   sent_count: (emailStats.sent_count || 0) + 1,
