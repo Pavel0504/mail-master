@@ -48,6 +48,10 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
 
   // Progress tracking state
   const [progress, setProgress] = useState({ current: 0, total: 0 });
+  // Добавить после const [progress, setProgress] = useState({ current: 0, total: 0 });
+const [showNoDuplicatesModal, setShowNoDuplicatesModal] = useState(false);
+const [showProgressModal, setShowProgressModal] = useState(false);
+
 
   const checkForDuplicates = async () => {
     setCheckingDuplicates(true);
@@ -121,23 +125,34 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!payload.send_now && (!payload.scheduled_at || !payload.scheduled_time)) {
-      return alert("Укажите дату и время отправки или выберите 'Отправить сейчас'");
-    }
+const handleSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+  if (!payload.send_now && (!payload.scheduled_at || !payload.scheduled_time)) {
+    return alert("Укажите дату и время отправки или выберите 'Отправить сейчас'");
+  }
 
-    // Check for duplicates before creating mailing
-    const duplicatesFound = await checkForDuplicates();
-    if (duplicatesFound.length > 0) {
-      setDuplicates(duplicatesFound);
-      setShowDuplicatesModal(true);
-      return;
-    }
+  // Проверяем дубли
+  const duplicatesFound = await checkForDuplicates();
+  
+  if (duplicatesFound.length > 0) {
+    // Если есть дубли - показываем модалку с дублями
+    setDuplicates(duplicatesFound);
+    setShowDuplicatesModal(true);
+  } else {
+    // Если дублей нет - показываем модалку "дублей не обнаружено"
+    setShowNoDuplicatesModal(true);
+  }
+};
 
-    // Show progress and proceed with mailing creation
-    setProgress({ current: 0, total: selectedContacts.length });
+const handleContinueWithNoDuplicates = async () => {
+  // Закрываем модалку "дублей не обнаружено"
+  setShowNoDuplicatesModal(false);
+  
+  // Показываем модалку с прогресс-баром
+  setShowProgressModal(true);
+  setProgress({ current: 0, total: selectedContacts.length });
 
+  try {
     await createMailing(
       { ...payload, selected_contacts: selectedContacts },
       {
@@ -150,25 +165,39 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
         },
       }
     );
+    
+    // Успешно создано - закрываем все модалки
+    setShowProgressModal(false);
     onCreated?.();
     onClose();
-  };
+  } catch (err) {
+    // При ошибке закрываем прогресс и показываем ошибку
+    setShowProgressModal(false);
+    alert('Ошибка при создании рассылки: ' + (err instanceof Error ? err.message : String(err)));
+  }
+};
 
-  const handleEditMailing = () => {
-    setShowDuplicatesModal(false);
-  };
+const handleEditMailing = () => {
+  // Закрываем модалку дублей
+  setShowDuplicatesModal(false);
+  // Модалка создания остается открытой (не вызываем onClose)
+  // Пользователь может редактировать параметры
+};
 
-  const handleExcludeAndContinue = async (excludedIds: string[]) => {
-    // Remove excluded contacts from selectedContacts
-    const filteredContacts = selectedContacts.filter(id => !excludedIds.includes(id));
-    setSelectedContacts(filteredContacts);
 
-    // Close duplicates modal
-    setShowDuplicatesModal(false);
+const handleExcludeAndContinue = async (excludedIds: string[]) => {
+  // Убираем исключенные контакты
+  const filteredContacts = selectedContacts.filter(id => !excludedIds.includes(id));
+  setSelectedContacts(filteredContacts);
 
-    // Show progress and proceed with mailing creation using filtered contacts
-    setProgress({ current: 0, total: filteredContacts.length });
+  // Закрываем модалку дублей
+  setShowDuplicatesModal(false);
+  
+  // Показываем модалку с прогресс-баром
+  setShowProgressModal(true);
+  setProgress({ current: 0, total: filteredContacts.length });
 
+  try {
     await createMailing(
       { ...payload, selected_contacts: filteredContacts, exclude_contacts: excludedIds },
       {
@@ -182,9 +211,25 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
         },
       }
     );
+    
+    // Успешно создано - закрываем все модалки
+    setShowProgressModal(false);
     onCreated?.();
     onClose();
-  };
+  } catch (err) {
+    // При ошибке закрываем прогресс и показываем ошибку
+    setShowProgressModal(false);
+    alert('Ошибка при создании рассылки: ' + (err instanceof Error ? err.message : String(err)));
+  }
+};
+
+const handleCancelDuplicates = () => {
+  // Закрываем модалку дублей
+  setShowDuplicatesModal(false);
+  // Закрываем все модалки
+  onClose();
+};
+
 
   const onGroupToggle = (groupId: string) => {
     const s = new Set(expandedGroups);
@@ -343,14 +388,6 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
 
           <SchedulePicker payload={payload} onChange={setPayload} />
 
-          {loading && progress.total > 0 && (
-            <ProgressBar
-              current={progress.current}
-              total={progress.total}
-              label={`Обработка контактов: ${progress.current} из ${progress.total}`}
-            />
-          )}
-
           <div className="flex gap-3 pt-4 border-t">
             <button type="button" onClick={onClose} disabled={loading} className="flex-1 px-4 py-2 bg-gray-200 rounded-lg">Отменить</button>
             <button type="submit" disabled={loading} className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg">{loading ? "Создание..." : "Создать"}</button>
@@ -361,10 +398,66 @@ export function CreateEditModal({ open, onClose, groups, emails, contacts, initi
       <DuplicatesModal
         duplicates={duplicates}
         open={showDuplicatesModal}
-        onClose={() => setShowDuplicatesModal(false)}
+        onClose={handleCancelDuplicates}
         onEditMailing={handleEditMailing}
         onExcludeAndContinue={handleExcludeAndContinue}
       />
+      {showNoDuplicatesModal && (
+  <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-[60]">
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-md w-full p-6">
+      <div className="flex items-center justify-center mb-4">
+        <div className="w-12 h-12 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center">
+          <svg className="w-6 h-6 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        </div>
+      </div>
+      
+      <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-2 text-center">
+        Дубли не обнаружены
+      </h2>
+      
+      <p className="text-gray-600 dark:text-gray-400 text-center mb-6">
+        Все выбранные контакты готовы к отправке. Нажмите "Продолжить" чтобы начать создание рассылки.
+      </p>
+
+      <button
+        onClick={handleContinueWithNoDuplicates}
+        disabled={loading}
+        className="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium rounded-lg transition-colors"
+      >
+        {loading ? 'Создание...' : 'Продолжить'}
+      </button>
+    </div>
+  </div>
+)}
+
+{showProgressModal && (
+  <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-[60]">
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-md w-full p-6">
+      <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-4 text-center">
+        Создание рассылки
+      </h2>
+      
+      <div className="mb-4">
+        <div className="flex items-center justify-center mb-4">
+          <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+        </div>
+        
+        <ProgressBar
+          current={progress.current}
+          total={progress.total}
+          label={`Обработка контактов: ${progress.current} из ${progress.total}`}
+        />
+      </div>
+
+      <p className="text-sm text-gray-600 dark:text-gray-400 text-center">
+        Пожалуйста, подождите. Не закрывайте это окно.
+      </p>
+    </div>
+  </div>
+)}
+
     </div>
   );
 }
