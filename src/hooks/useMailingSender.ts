@@ -89,7 +89,7 @@ export function useMailingSender() {
   };
 
   const processMailing = async (mailingId: string, totalRecipients: number) => {
-    const serverUrl = import.meta.env.VITE_SERVER_URL;
+    const serverUrl = ''; // Empty string to use relative path
 
     let sentCount = 0;
     let successCount = 0;
@@ -124,7 +124,7 @@ export function useMailingSender() {
         }));
 
         // Вызываем send-email для этого получателя
-        const sendResponse = await fetch(`${serverUrl}/api/send-email`, {
+        const sendResponse = await fetch(`/api/send-email`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

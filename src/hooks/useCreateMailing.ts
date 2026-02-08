@@ -41,6 +41,8 @@ export function useCreateMailing() {
    * (с обработкой групп -> подгрупп -> контактов, выбором контента, выбором sender_email,
    * созданием mailings + mailing_recipients, вызовом functions/v1/send-email при send_now
    * и логированием в activity_logs).
+   *
+   * См. исходник: MailingsPage.tsx (proceedWithMailingCreation). :contentReference[oaicite:1]{index=1}
    */
   const createMailing = async (
     newMailing: MailingCreatePayload,
@@ -68,48 +70,13 @@ export function useCreateMailing() {
 
       // --- 2. используем ТОЧНО тот список контактов, который выбран в UI ---
       // Берем контакты напрямую из UI, без повторного сбора из групп
-      const rawSelected = opts.selectedContactsFromUI || [];
+      const allContactIds = opts.selectedContactsFromUI || [];
 
       // Используем переданный override списка исключений (если есть) иначе из newMailing
       const excludeList = opts.excludeContactsOverride ?? newMailing.exclude_contacts ?? [];
 
-      // Преобразуем rawSelected в список contact IDs, но только тех контактов,
-      // которые принадлежат текущему пользователю (owner_id === user.id).
-      // rawSelected может содержать либо contact.id либо contact.email (в зависимости от UI).
-      const selectedOwnedContactIds: string[] = [];
-      const contactsLowerEmailIndex: Record<string, any> = {};
-
-      // подготовим быстрый индекс по email для текущих контактов
-      for (const c of opts.contacts || []) {
-        if (!c || !c.email) continue;
-        const key = String(c.email).toLowerCase();
-        if (!contactsLowerEmailIndex[key]) contactsLowerEmailIndex[key] = [];
-        contactsLowerEmailIndex[key].push(c);
-      }
-
-      for (const sel of rawSelected) {
-        // сначала пробуем трактовать sel как id
-        let contact = (opts.contacts || []).find((c) => c.id === sel && c.owner_id === user.id);
-        if (contact) {
-          selectedOwnedContactIds.push(contact.id);
-          continue;
-        }
-        // иначе пробуем трактовать sel как email (чувствительность к регистру отключена)
-        const selEmail = String(sel || "").toLowerCase();
-        const bucket = contactsLowerEmailIndex[selEmail];
-        if (bucket && bucket.length > 0) {
-          // выбрать ту запись, у которой owner_id === user.id
-          const owned = bucket.find((c: any) => c.owner_id === user.id);
-          if (owned) {
-            selectedOwnedContactIds.push(owned.id);
-            continue;
-          }
-        }
-        // если не нашли, пропускаем — безопаснее, чем взять "чужой" контакт
-      }
-
       // Убираем исключённые контакты
-      const finalContacts = selectedOwnedContactIds.filter((id) => !excludeList.includes(id));
+      const finalContacts = allContactIds.filter((id) => !excludeList.includes(id));
 
       if (finalContacts.length === 0) {
         throw new Error("Нет контактов для отправки. Проверьте выбранные группы и контакты.");
@@ -119,22 +86,18 @@ export function useCreateMailing() {
       const contactSubgroupMap: Record<string, string[]> = {};
       const allSubgroupsUsed = new Set<string>();
 
-      // делаем один батч-запрос, вместо отдельного запроса на каждый контакт
-      const { data: membershipsData } = await supabase
-        .from("contact_group_members")
-        .select("contact_id, group_id")
-        .in("contact_id", finalContacts);
+      for (const contactId of finalContacts) {
+        const { data: memberships } = await supabase
+          .from("contact_group_members")
+          .select("group_id")
+          .eq("contact_id", contactId);
 
-      if (membershipsData && membershipsData.length > 0) {
-        for (const m of membershipsData) {
-          if (!contactSubgroupMap[m.contact_id]) contactSubgroupMap[m.contact_id] = [];
-          contactSubgroupMap[m.contact_id].push(m.group_id);
-          allSubgroupsUsed.add(m.group_id);
+        if (memberships && memberships.length > 0) {
+          contactSubgroupMap[contactId] = memberships.map((m: any) => m.group_id);
+          memberships.forEach((m: any) => allSubgroupsUsed.add(m.group_id));
+        } else {
+          contactSubgroupMap[contactId] = [];
         }
-      }
-      // ensure empty arrays for contacts without memberships
-      for (const cid of finalContacts) {
-        if (!contactSubgroupMap[cid]) contactSubgroupMap[cid] = [];
       }
 
       // --- 4. подгружаем данные по подгруппам (default content, default_sender_email_id) ---
@@ -157,11 +120,9 @@ export function useCreateMailing() {
       let mailingTextContent: string | null = newMailing.text_content ?? null;
       let mailingHtmlContent: string | null = newMailing.html_content ?? null;
 
-      const selectedSubgroupsArr = opts.selectedSubgroups || [];
-
-      if (selectedSubgroupsArr.length > 0) {
+      if (opts.selectedSubgroups.length > 0) {
         // берем контент из первой выбранной подгруппы (если есть)
-        const first = subgroupsData[selectedSubgroupsArr[0]];
+        const first = subgroupsData[opts.selectedSubgroups[0]];
         if (first) {
           mailingSubject = first.default_subject || mailingSubject;
           mailingTextContent = first.default_text_content ?? mailingTextContent;
@@ -205,9 +166,7 @@ export function useCreateMailing() {
           html_content: mailingHtmlContent,
           scheduled_at: scheduledAt,
           timezone: newMailing.timezone,
-          // <<< Изменение: всегда устанавливаем стартовый статус 'pending'.
-          // Если send_now === true — мы оставляем отправку на process-mailing, который атомарно выставит 'sending'.
-          status: "pending",
+          status: newMailing.send_now ? "sending" : "pending",
           sent_count: 0,
           success_count: 0,
           failed_count: 0,
@@ -224,7 +183,7 @@ export function useCreateMailing() {
       const groupEmailMap: Record<string, string> = {};
 
       // overrides из newMailing.subgroup_email_overrides + выбранных подгрупп
-      for (const groupId of newMailing.selected_groups || []) {
+      for (const groupId of newMailing.selected_groups) {
         const { data: subgroups } = await supabase
           .from("contact_groups")
           .select("id")
@@ -240,7 +199,7 @@ export function useCreateMailing() {
         }
       }
 
-      for (const subgroupId of selectedSubgroupsArr) {
+      for (const subgroupId of opts.selectedSubgroups) {
         const emailOverride = newMailing.subgroup_email_overrides?.[subgroupId];
         if (emailOverride) groupEmailMap[subgroupId] = emailOverride;
       }
@@ -320,9 +279,9 @@ export function useCreateMailing() {
           .select();
 
         if (newMailing.send_now && insertedRecipients && insertedRecipients.length > 0) {
-          const serverUrl = import.meta.env.VITE_SERVER_URL;
+          const serverUrl = '';
 
-          fetch(`${serverUrl}/api/process-mailing`, {
+          fetch('/api/process-mailing', {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
